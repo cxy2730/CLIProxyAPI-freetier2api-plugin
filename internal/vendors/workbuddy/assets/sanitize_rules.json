@@ -6,7 +6,11 @@
     "Main branch (",
     "You are a coding agent running in the Codex CLI",
     "github.com/anthropics/",
-    "11128"
+    "11128",
+    "Tokens prefixed with @ are paths",
+    "You are an AI agent powered by DeepSeek",
+    "You are a coding agent powered by",
+    "DeepSeek Harness"
   ],
   "rewrites": [
     [
@@ -28,6 +32,30 @@
     [
       "code=11128",
       "11128"
+    ],
+    [
+      "Tokens prefixed with @ are paths",
+      "Tokens prefixed with (at) are paths"
+    ],
+    [
+      "You are an AI agent powered by DeepSeek Harness.",
+      "You are an AI agent powered by DeepSeek-Harness."
+    ],
+    [
+      "You are a coding agent powered by",
+      "You are a coding agent running on"
+    ],
+    [
+      "Current DeepSeek Harness Web GUI URL",
+      "Current Web GUI URL"
+    ],
+    [
+      "the DeepSeek Harness Web GUI",
+      "this Web GUI"
+    ],
+    [
+      "DeepSeek Harness",
+      "DeepSeek-Harness"
     ]
   ],
   "regexes": {
