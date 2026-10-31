@@ -42,13 +42,15 @@ const (
 	PointsBillsPath = "/bills"
 	DesktopBasePath = "/api/web/desktop/v1"
 	AuthorizePath   = "/code/authorize"
-	// DefaultConfigName 是上游默认对话模型（v1.1.0 抓包：目录 default_model）。
+	// DefaultConfigName 是上游默认对话模型（v1.1.0 时期抓包的目录
+	// default_model；模型 id 与客户端版本无关，之后未变）。
 	DefaultConfigName = "raccoon-8c4485"
 	// DefaultClientVersion 是出站 x-client-version 头的内置值。
 	//
-	// 2026-10-31 官方下载页（xiaohuanxiong.com/download）当前发布版本：
-	// macOS / Windows 1.1.3、Linux 1.0.38。这里的平台头声明的是
-	// desktop-windows-x64，因此对齐 Windows 的 1.1.3（原值 v1.1.0 已落后）。
+	// 注意这不是抓包值：官方下载页只给下载按钮、不显示版本号，公开渠道
+	// 无法核对具体子版本。这里取桌面发版线 1.1.x 的 v1.1.3，理由是它与
+	// 登录奖励域（同一桌面客户端）保持同一版本，且比原值 v1.1.0 更接近
+	// 当前发布线。若日后抓到真实客户端流量，以抓包为准覆盖此值。
 	DefaultClientVersion = "v1.1.3"
 )
 
@@ -66,6 +68,9 @@ func BaseURL(override, fallback string) string {
 
 // ApplyClientHeaders 写入小浣熊桌面客户端识别头（抓包实测：上游按客户端
 // 渠道做风控，带上最贴近真实流量）。
+//
+// 名称 / 平台 / 渠道三个头是抓包值；版本见 DefaultClientVersion 的说明
+// ——那个值没有抓包支撑，只是与登录奖励域对齐。
 func ApplyClientHeaders(req *http.Request) {
 	req.Header.Set("x-client-name", "@raccoon/office-desktop")
 	req.Header.Set("x-client-platform", "desktop-windows-x64")
@@ -88,9 +93,10 @@ const grantClientVersion = DefaultClientVersion
 
 // ApplyGrantHeaders 写入登录奖励接口的客户端识别头。
 //
-// 与 ApplyClientHeaders 刻意分开：对话域沿用既有抓包值，登录奖励端点按
-// 官方桌面客户端口径发送固定枚举与组织码。个人账号的 X-Org-Code 为空串，
-// 但该头必须存在（上游总是发送）。
+// 与 ApplyClientHeaders 刻意分开：两个端点要的平台枚举不同（对话域
+// desktop-windows-x64 来自抓包，登录域必须是 desktop-windows，猜成 -x64
+// 会被拒），版本则共用同一发布线。个人账号的 X-Org-Code 为空串，但该头
+// 必须存在（上游总是发送）。
 func ApplyGrantHeaders(req *http.Request, token, orgCode, deviceID string) {
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
