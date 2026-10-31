@@ -546,14 +546,8 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   //
   // 本页与 CPA 管理面板（CPAMC）**同源**，所以可以直接复用面板已保存的
   // 管理密钥，用户不必再输入一遍。面板把整份认证状态存在 localStorage 的
-  // "cli-proxy-auth" 键下，值是可逆的 XOR 混淆：
-  //
-  //   enc::v2:: + base64( utf8(JSON) XOR utf8(seed|<host>) )          ← 8.0.48 起
-  //   enc::v1:: + base64( utf8(JSON) XOR utf8(seed|<host>|<userAgent>) )  ← 旧版
-  //   seed = "cli-proxy-api-webui::secure-storage"
-  //
-  // 明文形如 {"state":{...,"managementKey":"<密钥>",...},"version":N}，
-  // 密钥在 state.managementKey。
+  // "cli-proxy-auth" 键下（值是可逆的 XOR 混淆，格式见下方 OBF_* 注释），
+  // 明文形如 {"state":{...,"managementKey":"<密钥>",...},"version":N}。
   //
   // 注意：面板只在登录时勾选「记住密码」才把 managementKey 写进去——未勾选
   // 时这个键仍然存在，但没有该字段。因此自动复用是**尽力而为**：读不到就
@@ -561,58 +555,66 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   var PANEL_STORE_KEY = "cli-proxy-auth";
   var PANEL_KEY_FIELD = "managementKey";
   var MANUAL_STORE_KEY = "cpa-management-key";
-  // 混淆格式必须与 CPA 面板逐字节一致（面板侧同一份实现）：
+  // 混淆格式必须与 CPA 面板逐字节一致（面板侧同一份实现）。这里是格式的
+  // **唯一说明处**，别处只引用，不重复抄写：
   //
-  //   v1: "enc::v1::" + base64( utf8(JSON) XOR utf8(seed|host|userAgent) )
-  //   v2: "enc::v2::" + base64( utf8(JSON) XOR utf8(seed|host) )
+  //   enc::v1:: + base64( utf8(JSON) XOR utf8(seed|host|userAgent) )
+  //   enc::v2:: + base64( utf8(JSON) XOR utf8(seed|host) )
+  //   seed = "cli-proxy-api-webui::secure-storage"
   //
-  // CPA 8.0.48 起面板改写入 v2（派生密钥不再掺 userAgent，浏览器升级后不会
-  // 解出乱码），读取端仍兼容 v1。本页必须两种都认——只认 v1 的话，升级后面板
-  // 明明勾了「记住密码」，这里却一律读不到密钥。
-  var OBF_PREFIX_V1 = "enc::v1::";
-  var OBF_PREFIX_V2 = "enc::v2::";
-  var OBF_PREFIX_RE = /^enc::v\d+::/;
+  // CPA 8.0.48 起面板写 v2（派生密钥不再掺 userAgent，浏览器升级后不会解出
+  // 乱码），读取端仍兼容 v1。生态里另有分支面板（如 CPA-Manager-Plus）沿用
+  // v2 前缀但把版本号也掺进派生串（seed|v2|host）：解码后取不到合法密钥时按
+  // 这条再试一次，否则那些用户只会看到「未检测到管理密钥」。
+  //
+  // 派生串由 obfuscationKeys 集中生成，isObfuscated 认整个 enc::vN:: 家族——
+  // 两个判定点必须同源，否则「门禁认、解码不认」会让告警永远走不到。
+  var OBF_PREFIX_RE = /^enc::v(\d+)::/;
   var OBF_SEED = "cli-proxy-api-webui::secure-storage";
   var manualKey = "";
   var keyBusy = false;
   var keyRetryAfter = 0;
 
-  // obfuscationKey 派生 XOR 密钥。v1 掺 userAgent，v2 只到 host。
-  function obfuscationKey(withUA) {
-    return new TextEncoder().encode(
-      OBF_SEED + "|" + location.host + (withUA ? "|" + navigator.userAgent : ""));
+  // obfuscationKeys 列出某个版本可能的派生密钥串，官方口径排在前面。
+  function obfuscationKeys(version) {
+    var official = OBF_SEED + "|" + location.host;
+    if (version === "1") return [official + "|" + navigator.userAgent];
+    return [official, OBF_SEED + "|v" + version + "|" + location.host];
   }
 
-  // isObfuscated 判断存储值是否为本页认识的混淆串。
+  // xorDecode 解开 base64 + XOR 的载荷并按 UTF-8 解码。
+  function xorDecode(payload, keyText) {
+    var key = new TextEncoder().encode(keyText);
+    var binary = atob(payload);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    for (var j = 0; j < bytes.length; j++) bytes[j] ^= key[j % key.length];
+    return new TextDecoder().decode(bytes);
+  }
+
+  // isObfuscated 判断存储值是否为面板的混淆格式（任意版本）。
   function isObfuscated(raw) {
-    return typeof raw === "string"
-      && (raw.indexOf(OBF_PREFIX_V1) === 0 || raw.indexOf(OBF_PREFIX_V2) === 0);
+    return OBF_PREFIX_RE.test(raw);
   }
 
-  // deobfuscate 还原面板写入的值；不是混淆格式或解码失败时返回 null。
-  function deobfuscate(raw) {
-    if (!raw) return null;
-    var prefix, withUA;
-    if (raw.indexOf(OBF_PREFIX_V2) === 0) { prefix = OBF_PREFIX_V2; withUA = false; }
-    else if (raw.indexOf(OBF_PREFIX_V1) === 0) { prefix = OBF_PREFIX_V1; withUA = true; }
-    else {
-      // 认识的混淆家族但不是已知版本：面板升级换了格式，静默失败会让用户
-      // 只看到「未检测到管理密钥」，这里留一条线索。
-      if (OBF_PREFIX_RE.test(raw)) {
-        try { console.warn("面板存储格式版本不受支持，请升级本插件：", raw.slice(0, 9)); } catch (e) { /* 忽略 */ }
-      }
-      return null;
+  // deobfuscateAll 返回面板值的全部候选明文，官方口径在前。
+  //
+  // 未知版本返回空数组，并在控制台留一条「请升级插件」的线索：面板再升级换
+  // 格式时，用户至少知道原因，而不是只看到「未检测到管理密钥」。
+  function deobfuscateAll(raw) {
+    var match = OBF_PREFIX_RE.exec(raw || "");
+    if (!match) return [];
+    var version = match[1];
+    if (version !== "1" && version !== "2") {
+      try { console.warn("面板存储格式版本不受支持，请升级本插件：enc::v" + version + "::"); } catch (e) { /* 忽略 */ }
+      return [];
     }
-    try {
-      var binary = atob(raw.slice(prefix.length));
-      var bytes = new Uint8Array(binary.length);
-      for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      var key = obfuscationKey(withUA);
-      for (var j = 0; j < bytes.length; j++) bytes[j] ^= key[j % key.length];
-      return new TextDecoder().decode(bytes);
-    } catch (e) {
-      return null;
-    }
+    var payload = raw.slice(match[0].length);
+    var texts = [];
+    obfuscationKeys(version).forEach(function (keyText) {
+      try { texts.push(xorDecode(payload, keyText)); } catch (e) { /* 该派生串解不开，试下一个 */ }
+    });
+    return texts;
   }
 
   // KEY_RE 限制可接受的密钥字符集：必须是可见 ASCII。
@@ -627,7 +629,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   function normalizeKeyValue(raw) {
     if (!raw) return "";
     var text = String(raw).trim();
-    if (isObfuscated(text)) return "";                    // 混淆串，交给 deobfuscate
+    if (isObfuscated(text)) return "";                    // 混淆串，交给 deobfuscateAll
     if (text === "null" || text === "undefined") return "";
     // 面板用 JSON.stringify 存，因此值可能带引号。
     if (text.length > 1 && text.charAt(0) === '"' && text.charAt(text.length - 1) === '"') {
@@ -641,27 +643,29 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     return text;
   }
 
-  // panelAuthKey 从面板的持久化快照里取出管理密钥。
-  //
-  //   localStorage["cli-proxy-auth"] = "enc::v1::" + XOR(JSON) 或纯 JSON
-  //   JSON.state.managementKey
-  //
-  // 面板未勾选「记住密码」时快照里没有 managementKey 字段，这里返回空串。
-  function panelAuthKey() {
-    var raw = "";
-    try { raw = localStorage.getItem(PANEL_STORE_KEY) || ""; } catch (e) { return ""; }
-    if (!raw) return "";
-    var text = raw;
-    if (isObfuscated(raw)) {
-      text = deobfuscate(raw) || "";
-      if (!text) return "";
-    }
+  // snapshotKey 从一份快照明文里取管理密钥；解析不出合法密钥时返回空串。
+  function snapshotKey(text) {
     var snapshot = null;
     try { snapshot = JSON.parse(text); } catch (e) { return ""; }
     if (!snapshot || typeof snapshot !== "object") return "";
     // zustand persist 的落盘格式是 {state:{...},version:N}，也兼容直接存 state。
     var state = (snapshot.state && typeof snapshot.state === "object") ? snapshot.state : snapshot;
     return normalizeKeyValue(state[PANEL_KEY_FIELD]);
+  }
+
+  // panelAuthKey 从面板的持久化快照里取出管理密钥（格式见上方 OBF_* 注释）。
+  //
+  // 面板未勾选「记住密码」时快照里没有 managementKey 字段，这里返回空串。
+  function panelAuthKey() {
+    var raw = "";
+    try { raw = localStorage.getItem(PANEL_STORE_KEY) || ""; } catch (e) { return ""; }
+    if (!raw) return "";
+    var texts = isObfuscated(raw) ? deobfuscateAll(raw) : [raw];
+    for (var i = 0; i < texts.length; i++) {
+      var key = snapshotKey(texts[i]);
+      if (key) return key;
+    }
+    return "";
   }
 
   // managementKey 返回当前生效的管理密钥。
@@ -3056,8 +3060,8 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     }).then(function () { btn.disabled = false; });
   });
 
-  // 单账号福利领取与批量签到共用同一个端点；保存本次目标，避免请求期间
-  // 勾选变化导致刷新了另一批账号。
+  // 签到与福利领取共用 /checkin；先固定本次目标账号，避免请求期间勾选变化
+  // 导致结果刷到另一批账号上。
   function runCheckin(accountIDs, btn) {
     btn.disabled = true;
     banner("ok", "签到 / 福利领取已在后台开始，请稍候…", 0);

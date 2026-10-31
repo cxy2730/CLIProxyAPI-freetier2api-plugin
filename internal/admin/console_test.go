@@ -4,7 +4,14 @@ package admin
 // 页面与断言同包，改动页面时改造这里，不要再散落到插件根层测试。
 
 import (
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -35,9 +42,7 @@ func TestConsolePageDecodesPanelKey(t *testing.T) {
 
 	// 混淆格式与快照字段必须与面板一致。
 	for _, literal := range []string{
-		`"enc::v1::"`,                            // 旧前缀（必须继续兼容）
-		`"enc::v2::"`,                            // 新前缀（8.0.48 起面板写这个）
-		`var OBF_PREFIX_V2`,                      // 双前缀分支必须真的存在
+		`var OBF_PREFIX_RE = /^enc::v(\d+)::/`,   // 版本前缀：门禁与解码同源
 		`"cli-proxy-api-webui::secure-storage"`,  // 种子
 		`var PANEL_STORE_KEY = "cli-proxy-auth"`, // 面板的存储键名
 		`var PANEL_KEY_FIELD = "managementKey"`,  // 密钥在快照里的字段名
@@ -47,10 +52,18 @@ func TestConsolePageDecodesPanelKey(t *testing.T) {
 		"navigator.userAgent",                    // 密钥派生输入
 		"atob(",                                  // base64 解码
 		"TextDecoder",                            // utf8 解码
+		"function deobfuscateAll(",               // 解码出口（官方口径在前）
+		"function snapshotKey(",                  // 快照解析
 	} {
 		if !strings.Contains(page, literal) {
 			t.Fatalf("console page is missing %s (key decoding would break)", literal)
 		}
+	}
+
+	// 门禁与解码必须认同一个版本家族：只认 v1/v2 会让「面板又升级」变成静默
+	// 失败（历史回归），而 normalizeKeyValue 也不该把未知版本的混淆串当密钥。
+	if !strings.Contains(page, "return OBF_PREFIX_RE.test(raw);") {
+		t.Fatal("isObfuscated must gate on OBF_PREFIX_RE (whole enc::vN:: family)")
 	}
 
 	// 旧版面板的键名不再读取：读到过期值会让页面带着错密钥去打探针，
@@ -78,6 +91,145 @@ func TestConsolePageDecodesPanelKey(t *testing.T) {
 			t.Fatalf("console page is missing the manual key fallback (%s)", literal)
 		}
 	}
+}
+
+// TestConsolePagePanelKeyRoundTrip 用官方面板算法生成快照，实际执行页面里的
+// 解码函数，锁住「v1/v2 都能解出密钥、未知版本不解但留告警」。
+//
+// 上一条测试只断言字面量存在——算法改错（比如给 v2 掺 userAgent、或删掉 v1
+// 分支）它一条都不会红。这里把页面里那段函数抽出来交给 node 跑，输入是测试
+// 侧按面板文档算出来的密文，输出必须与预期逐字一致。
+//
+// 没有 node 时跳过：这是加倍的保险，不引入构建依赖。
+func TestConsolePagePanelKeyRoundTrip(t *testing.T) {
+	nodePath, errLook := exec.LookPath("node")
+	if errLook != nil {
+		t.Skip("node 不可用，跳过页面密钥算法的交叉验证")
+	}
+	page := Page("/plugins/freetier2api")
+	start := strings.Index(page, "var PANEL_STORE_KEY")
+	end := strings.Index(page, "// managementKey 返回当前生效的管理密钥。")
+	if start < 0 || end <= start {
+		t.Fatal("console page key-decoding block not found")
+	}
+
+	const (
+		salt = "cli-proxy-api-webui::secure-storage"
+		host = "cpa.example.com:8317"
+		ua   = "Mozilla/5.0 fixture"
+		key  = "sk-fixture-key"
+	)
+	// 载荷必须长于派生密钥：真实快照是 KB 级，短载荷会让「密钥是另一把的前缀」
+	// 这一族错误（v1 = v2 密钥 + "|" + UA）在 XOR 下无法区分，测试就白测了。
+	payload := `{"state":{"apiBase":"http://127.0.0.1:8317","managementKey":"` + key +
+		`","note":"` + strings.Repeat("payload", 40) + `"},"version":0}`
+	cases := []struct {
+		name   string
+		stored string
+		want   string
+		warns  bool
+	}{
+		{"v2 官方派生 seed|host", encodePanelSnapshot(2, payload, salt+"|"+host), key, false},
+		{"v1 官方派生 seed|host|userAgent", encodePanelSnapshot(1, payload, salt+"|"+host+"|"+ua), key, false},
+		{"v2 分支面板派生 seed|v2|host", encodePanelSnapshot(2, payload, salt+"|v2|"+host), key, false},
+		{"未知版本 enc::v9::", encodePanelSnapshot(9, payload, salt+"|v9|"+host), "", true},
+	}
+
+	type caseJSON struct {
+		Name   string `json:"name"`
+		Stored string `json:"stored"`
+		Want   string `json:"want"`
+	}
+	type resultJSON struct {
+		Name   string `json:"name"`
+		Want   string `json:"want"`
+		Got    string `json:"got"`
+		Err    string `json:"err"`
+		Warned bool   `json:"warned"`
+	}
+
+	encodedCases, errMarshal := json.Marshal(func() []caseJSON {
+		out := make([]caseJSON, 0, len(cases))
+		for _, c := range cases {
+			out = append(out, caseJSON{Name: c.name, Stored: c.stored, Want: c.want})
+		}
+		return out
+	}())
+	if errMarshal != nil {
+		t.Fatalf("marshal cases: %v", errMarshal)
+	}
+
+	script := strings.NewReplacer(
+		"__BLOCK__", strconv.Quote(page[start:end]),
+		"__CASES__", string(encodedCases),
+		"__HOST__", strconv.Quote(host),
+		"__UA__", strconv.Quote(ua),
+	).Replace(`const block = __BLOCK__;
+const cases = __CASES__;
+globalThis.location = { host: __HOST__ };
+Object.defineProperty(globalThis, 'navigator', { value: { userAgent: __UA__ }, configurable: true });
+const store = {};
+globalThis.localStorage = {
+  getItem: function (k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
+  setItem: function (k, v) { store[k] = v; },
+};
+const warnings = [];
+const page = new Function('console', block + ';return {panelAuthKey: panelAuthKey};')({
+  warn: function () { warnings.push(Array.prototype.join.call(arguments, ' ')); },
+  log: function () {},
+});
+const out = cases.map(function (c) {
+  store['cli-proxy-auth'] = c.stored;
+  warnings.length = 0;
+  let got = '', err = '';
+  try { got = page.panelAuthKey(); } catch (e) { err = String(e); }
+  return { name: c.name, want: c.want, got: got, err: err, warned: warnings.length > 0 };
+});
+process.stdout.write(JSON.stringify(out));
+`)
+
+	scriptPath := filepath.Join(t.TempDir(), "panelkey.cjs")
+	if errWrite := os.WriteFile(scriptPath, []byte(script), 0o600); errWrite != nil {
+		t.Fatalf("write script: %v", errWrite)
+	}
+	output, errRun := exec.Command(nodePath, scriptPath).CombinedOutput()
+	if errRun != nil {
+		t.Fatalf("node 执行页面解码函数失败: %v\n%s", errRun, output)
+	}
+	var results []resultJSON
+	if errUnmarshal := json.Unmarshal(output, &results); errUnmarshal != nil {
+		t.Fatalf("解析 node 输出失败: %v（输出 %q）", errUnmarshal, output)
+	}
+	if len(results) != len(cases) {
+		t.Fatalf("结果条数 = %d, want %d", len(results), len(cases))
+	}
+	for index, result := range results {
+		if result.Err != "" {
+			t.Fatalf("%s: 解码抛错: %s", result.Name, result.Err)
+		}
+		if result.Got != cases[index].want {
+			t.Fatalf("%s: 解出 %q, want %q", result.Name, result.Got, cases[index].want)
+		}
+		if result.Warned != cases[index].warns {
+			t.Fatalf("%s: 告警 = %v, want %v（未知版本必须留线索）", result.Name, result.Warned, cases[index].warns)
+		}
+	}
+}
+
+// encodePanelSnapshot 按面板文档把明文编成指定版本的混淆串。
+func encodePanelSnapshot(version int, payload, keyText string) string {
+	return fmt.Sprintf("enc::v%d::%s", version, encodePanelPayload(payload, keyText))
+}
+
+// encodePanelPayload 用面板同款 XOR + base64 编码载荷（测试侧的独立实现，
+// 与页面实现互为对照，避免「同一处写错两边一起错」）。
+func encodePanelPayload(payload, keyText string) string {
+	key := []byte(keyText)
+	raw := []byte(payload)
+	for index := range raw {
+		raw[index] ^= key[index%len(key)]
+	}
+	return base64.StdEncoding.EncodeToString(raw)
 }
 
 // TestConsolePageNeverCallsWithoutKey 验证控制台页在身份确认之前不发任何管理请求。
