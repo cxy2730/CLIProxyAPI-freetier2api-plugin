@@ -21,7 +21,7 @@ const (
 	benefitCodeMarker = "InferHub.4004.200"
 	benefitMsgMarker  = "benefit not found"
 	// benefitHint 是给用户的可操作提示，附在上游原文之后而不是替换它。
-	benefitHint = "未领取免费福利模型配额，请在管理端领取或开启自动领取"
+	benefitHint = "未领取免费福利模型配额，请在插件账号页点击「领取每日福利」或选中账号后点「一键签到」；自动领取使用「每日自动签到」设置"
 )
 
 // errorEnvelope 是 CodeArts / InferHub 的业务错误信封。

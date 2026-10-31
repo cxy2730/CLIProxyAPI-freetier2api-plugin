@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -94,17 +95,47 @@ func Checkin(ctx context.Context, cred *Credential) (*CheckinResult, error) {
 	info, errInfo := fetchAccountInfo(ctx, cred)
 	if errInfo != nil {
 		// 账户信息查不到时不能直接判失败：Token 计费账户本来就不在积分活动
-		// 范围，仍可能走福利 Token 通道。兜底也失败时再报原始错误。
-		if result, errFallback := claimBenefitTokenFallback(ctx, cred, false); errFallback == nil {
+		// 范围，仍可能走福利 Token 通道。兜底也失败时保留两条链路的原因。
+		result, errFallback := claimBenefitTokenFallback(ctx, cred, false)
+		if errFallback == nil {
 			return result, nil
 		}
-		return nil, errInfo
+		return nil, errors.Join(errInfo, errFallback)
 	}
 	if !info.Package.IsCreditPackage {
 		// Token 计费账户不在积分活动范围，但仍可能有每日免费福利 Token。
 		return claimBenefitTokenFallback(ctx, cred, info.Package.IsTokenPackage)
 	}
 
+	// 积分签到与免费模型福利是两份独立权益：积分账户也必须领取福利 Token，
+	// 否则签到成功后，走 maas_type=benefit 的对话仍会返回 4004。
+	credit, errCredit := checkinCreditActivity(ctx, cred)
+	benefit, errBenefit := claimAvailableBenefitToken(ctx, cred)
+	if errCredit != nil && errBenefit != nil {
+		return nil, errors.Join(fmt.Errorf("积分签到失败: %w", errCredit), fmt.Errorf("福利 Token 领取失败: %w", errBenefit))
+	}
+	if errCredit != nil {
+		if benefit != nil {
+			return nil, fmt.Errorf("%s；积分签到失败: %w", benefit.Message, errCredit)
+		}
+		return nil, errCredit
+	}
+	if errBenefit != nil {
+		return nil, fmt.Errorf("%s；福利 Token 领取失败: %w", credit.Message, errBenefit)
+	}
+	if benefit == nil {
+		return credit, nil
+	}
+	return &CheckinResult{
+		Already:     credit.Already && benefit.Already,
+		Credit:      credit.Credit,
+		Message:     credit.Message + "；" + benefit.Message,
+		NotRecorded: credit.NotRecorded && benefit.NotRecorded,
+	}, nil
+}
+
+// checkinCreditActivity 只处理积分签到，不决定是否领取免费模型福利。
+func checkinCreditActivity(ctx context.Context, cred *Credential) (*CheckinResult, error) {
 	activity, errActivity := fetchDailyActivity(ctx, cred)
 	if errActivity != nil {
 		return nil, errActivity
@@ -315,10 +346,10 @@ func jsonEscape(value string) string {
 	return strings.Trim(string(encoded), `"`)
 }
 
-// ---- Token 计费账户的福利 Token 兜底 ----
+// ---- 每日免费福利 Token ----
 //
-// 积分活动只对「已升级到积分计费模式」的账号开放。Token 计费账户仍走旧的
-// 福利 Token 通道（每日 1000 万），两条链路互不替代。
+// 积分活动只对「已升级到积分计费模式」的账号开放；免费福利 Token 单独领取，
+// 积分与 Token 计费账户都可能符合资格，两条链路互不替代。
 
 // BenefitGatewayStatus 报告福利通道是否开放。
 type BenefitGatewayStatus struct {
@@ -336,20 +367,33 @@ type BenefitClaim struct {
 
 // claimBenefitTokenFallback 为 Token 计费账户领取每日免费福利 Token。
 func claimBenefitTokenFallback(ctx context.Context, cred *Credential, isTokenAccount bool) (*CheckinResult, error) {
-	status, errStatus := fetchBenefitGatewayStatus(ctx, cred)
-	if errStatus != nil {
+	result, errClaim := claimAvailableBenefitToken(ctx, cred)
+	if errClaim != nil {
 		// 福利通道查询失败时，至少把「不在积分活动范围」的事实说清楚。
 		prefix := "非积分计费账户"
 		if isTokenAccount {
 			prefix = "Token 计费账户"
 		}
-		return nil, fmt.Errorf("%s，且福利通道查询失败: %w", prefix, errStatus)
+		return nil, fmt.Errorf("%s，福利 Token 领取失败: %w", prefix, errClaim)
 	}
-	if !status.Enabled {
+	if result == nil {
 		return &CheckinResult{
 			NotRecorded: true,
 			Message:     "当前账号未开放每日签到（既不是积分计费账户，也无福利 Token 活动）",
 		}, nil
+	}
+	return result, nil
+}
+
+// claimAvailableBenefitToken 先只读检查福利通道，再领取；未开放时返回 nil，
+// 不把正常的积分签到误判成失败，也不在查询额度或列模型时偷偷领取。
+func claimAvailableBenefitToken(ctx context.Context, cred *Credential) (*CheckinResult, error) {
+	status, errStatus := fetchBenefitGatewayStatus(ctx, cred)
+	if errStatus != nil {
+		return nil, errStatus
+	}
+	if !status.Enabled {
+		return nil, nil
 	}
 	claim, errClaim := claimBenefitToken(ctx, cred)
 	if errClaim != nil {
@@ -381,6 +425,9 @@ func fetchBenefitGatewayStatus(ctx context.Context, cred *Credential) (*BenefitG
 	if resp.StatusCode >= 400 {
 		return nil, Classify(resp.StatusCode, string(body))
 	}
+	if failure, okFailure := ErrorFromPayload(body); okFailure {
+		return nil, failure
+	}
 	var status BenefitGatewayStatus
 	if errUnmarshal := json.Unmarshal(body, &status); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode benefit gateway status: %w", errUnmarshal)
@@ -408,19 +455,18 @@ func claimBenefitToken(ctx context.Context, cred *Credential) (*BenefitClaim, er
 		return nil, fmt.Errorf("claim benefit response %d: %s", resp.StatusCode, DescribeClaimError(string(body)))
 	}
 	var envelope struct {
-		ErrorCode string `json:"error_code"`
-		ErrorMsg  string `json:"error_msg"`
-		Result    struct {
-			Channel  string `json:"channel"`
-			UserID   string `json:"user_id"`
-			UserName string `json:"user_name"`
-		} `json:"result"`
+		ErrorCode string        `json:"error_code"`
+		ErrorMsg  string        `json:"error_msg"`
+		Result    *BenefitClaim `json:"result"`
 	}
 	if errUnmarshal := json.Unmarshal(body, &envelope); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode claim benefit response: %w", errUnmarshal)
 	}
 	if envelope.ErrorCode != "" && envelope.ErrorCode != "0000" {
 		return nil, fmt.Errorf("claim benefit %s: %s", envelope.ErrorCode, DescribeClaimError(envelope.ErrorMsg))
+	}
+	if envelope.Result == nil {
+		return nil, fmt.Errorf("claim benefit response missing result: %s", DescribeClaimError(string(body)))
 	}
 	return &BenefitClaim{
 		Channel:  core.FirstNonEmpty(envelope.Result.Channel, "codearts"),

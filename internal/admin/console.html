@@ -1213,6 +1213,17 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
           var checkinCell = el("td", checkin.last_date
             ? (checkin.last_date + (checkin.streak ? " · 连续 " + checkin.streak + " 天" : ""))
             : "未签到");
+          if (account.vendor_id === "codearts") {
+            var benefitBtn = el("button", "领取每日福利", "act primary");
+            benefitBtn.type = "button";
+            benefitBtn.disabled = !!account.disabled;
+            benefitBtn.title = "领取该账号的免费福利 Token，并执行积分签到；两种权益分别领取";
+            benefitBtn.style.marginLeft = "8px";
+            benefitBtn.addEventListener("click", function () {
+              runCheckin([account.auth_id || account.auth_index], this);
+            });
+            checkinCell.appendChild(benefitBtn);
+          }
           var history = account.checkin_history || [];
           if (history.length) {
             var historyBtn = el("button", "历史 " + history.length, "act");
@@ -3027,11 +3038,13 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     }).then(function () { btn.disabled = false; });
   });
 
-  document.getElementById("btnCheckin").addEventListener("click", function () {
-    var btn = this;
+  // 单账号福利领取与批量签到共用同一个端点；保存本次目标，避免请求期间
+  // 勾选变化导致刷新了另一批账号。
+  function runCheckin(accountIDs, btn) {
     btn.disabled = true;
-    banner("ok", "签到已在后台开始，请稍候…", 0);
-    api("POST", "/checkin", { account_ids: selectedAccountIDs() }).then(function (result) {
+    banner("ok", "签到 / 福利领取已在后台开始，请稍候…", 0);
+    return api("POST", "/checkin", { account_ids: accountIDs }).then(function (result) {
+      if (!result) return;
       var results = (result && result.results) || [];
       if (!results.length) {
         banner("ok", "当前没有需要签到的账号", 5000);
@@ -3043,24 +3056,24 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       var skippedCount = results.filter(function (r) { return r.ok && r.skipped; }).length;
       var failedCount = results.filter(function (r) { return !r.ok; }).length;
       var total = results.length;
-      if (skippedCount > 0) {
-        // 把跳过原因逐条说出来，别只给一个数字。
-        var reasons = results.filter(function (r) { return r.ok && r.skipped; })
-          .map(function (r) { return (r.label || r.auth_id) + "：" + (r.message || "未完成"); });
-        banner("warn", "签到完成：" + doneCount + " / " + total + " 成功" +
-          (skippedCount > 0 ? "，" + skippedCount + " 个未完成（" + reasons.join("；") + "）" : "") +
-          (failedCount > 0 ? "，" + failedCount + " 个失败" : ""), 12000);
-      } else {
-        banner(doneCount === total ? "ok" : "warn", "签到完成：" + doneCount + " / " + total + " 成功", 5000);
-      }
+      // 成功也展示权益领取结果；失败必须展示上游原因，而不只是一个失败数。
+      var details = results.map(function (r) {
+        return (r.label || r.auth_id) + "：" + (r.message || (r.ok ? "已完成" : "失败"));
+      });
+      banner(doneCount === total ? "ok" : "warn", "签到 / 福利领取完成：" + doneCount + " / " + total + " 成功" +
+        (skippedCount ? "，" + skippedCount + " 个未完成" : "") +
+        (failedCount ? "，" + failedCount + " 个失败" : "") + "；" + details.join("；"), 12000);
       // 签到手上有新积分，但账号表读的是后端额度缓存（上一次 /quotas 的
       // 结果），不重查就会一直显示签到前的数字。loadQuotas 结束时会重拉账号表。
-      loadQuotas(true, selectedAccountIDs());
+      loadQuotas(true, accountIDs);
     }).catch(function (err) {
       banner("err", "签到失败：" + err.message, 8000);
     }).then(function () {
       btn.disabled = false;
     });
+  }
+  document.getElementById("btnCheckin").addEventListener("click", function () {
+    runCheckin(selectedAccountIDs(), this);
   });
   document.getElementById("btnScan").addEventListener("click", function () {
     banner("ok", "正在扫描全部账号…", 0);

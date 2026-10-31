@@ -131,6 +131,14 @@ The Accounts table has a selection column like the Models table. The toolbar rea
 - Disabling is not deleting: it only writes the host's `disabled` flag into the credential JSON (token and file are kept, so it is reversible). Delete removes the credential file;
 - Delete still takes two clicks: the first arms the button (auto-reset after 5 seconds), the second deletes.
 
+### 6. Claim CodeArts Daily Benefit Tokens
+
+In the plugin console's Accounts table, click **领取每日福利 (Claim daily benefits)** beside the CodeArts account, or select that account and click **Check in** in the toolbar. No official IDE installation is required on the remote server.
+
+Credit check-in and free-model benefit tokens are separate entitlements. The plugin checks upstream eligibility and claims both for credit accounts as well. An already-completed credit check-in or an absent credit campaign does not skip the benefit claim. If the benefit channel is disabled, only credit check-in runs. Results and failure reasons appear in the notification and check-in history; partial failures are not recorded as a fully completed day, so they can be retried.
+
+Automatic claims use the existing daily check-in settings (`auto_checkin` / `auto_checkin_at`). Quota queries and model refreshes never claim benefits. Availability remains subject to upstream eligibility and daily limits.
+
 ## Configuration
 
 Configure under `plugins.configs.freetier2api` in `config.yaml` (runtime settings can also be toggled live in the web console):

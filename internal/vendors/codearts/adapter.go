@@ -270,7 +270,13 @@ func (v *adapter) Checkin(ctx context.Context, cred *core.Credential) (*core.Che
 	}
 	result, errClaim := Checkin(ctx, native)
 	if errClaim != nil {
-		return nil, core.ToPluginError(errClaim)
+		converted := core.ToPluginError(errClaim)
+		if pluginErr, ok := converted.(*core.PluginError); ok {
+			// ToPluginError 按内层上游错误分类，但管理页还需要外层的两份权益
+			// 结果，避免把「积分成功、福利失败」缩成一条没有上下文的错误。
+			pluginErr.Message = errClaim.Error()
+		}
+		return nil, converted
 	}
 	return &core.CheckinResult{
 		Already:     result.Already,
