@@ -6,8 +6,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"freetier2api-plugin/internal/core"
 )
 
 // 活动福利领取的行为测试。
@@ -60,15 +63,34 @@ func TestUGActionsAreBatchable(t *testing.T) {
 			}
 		}
 	}
-	// 预算必须严格大于最坏耗时：固定端点各 perRequestTimeout，动态入口
-	// （活动表 1 次 + 裂变 status/grant 2 次）各 ugDynamicTimeout，再加一次
-	// 活动触发的预留 ugClaimReserve（触发条数不写死，靠 ugHasBudget 截断，
-	// 所以「最坏耗时」= 预算本身，恒不超过 ugRoundTimeout）。
+	// 预算必须严格大于最坏耗时。最坏耗时按真实链路重算：
+	//   固定端点 N×perRequestTimeout + activity/info 1×ugDynamicTimeout
+	//   + 活动触发 M×ugDynamicTimeout + 裂变整块 ugFissionReserve
+	// M 不写死，用触发门限（ugFissionReserve+ugClaimReserve）从预算反推，
+	// 这样改超时/加端点时这里的验算会自动跟着变，不会漏改。
+	if ugFissionReserve != 3*ugDynamicTimeout {
+		t.Fatalf("ugFissionReserve = %v，裂变是 share_status/share_link/grant 三次请求，应为 3×%v",
+			ugFissionReserve, ugDynamicTimeout)
+	}
 	fixedWorst := time.Duration(len(actions)) * perRequestTimeout
-	dynamicWorst := time.Duration(1+2)*ugDynamicTimeout + ugClaimReserve
-	if worst := fixedWorst + dynamicWorst; ugRoundTimeout <= worst {
-		t.Fatalf("ugRoundTimeout = %v，必须大于最坏耗时 %v（固定 %v + 动态 %v）",
-			ugRoundTimeout, worst, fixedWorst, dynamicWorst)
+	gate := ugFissionReserve + ugClaimReserve
+	remaining := ugRoundTimeout - fixedWorst - ugDynamicTimeout
+	triggers := 0
+	for remaining >= gate {
+		triggers++
+		remaining -= ugDynamicTimeout
+	}
+	if triggers < 1 {
+		t.Fatalf("按门限 %v 反推触发次数为 0：活动表根本领不到东西", gate)
+	}
+	worst := fixedWorst + ugDynamicTimeout + time.Duration(triggers)*ugDynamicTimeout + ugFissionReserve
+	if ugRoundTimeout <= worst {
+		t.Fatalf("ugRoundTimeout = %v，必须大于最坏耗时 %v（固定 %v + 表 %v + 触发 %d×%v + 裂变 %v）",
+			ugRoundTimeout, worst, fixedWorst, ugDynamicTimeout, triggers, ugDynamicTimeout, ugFissionReserve)
+	}
+	// 宿主上限：手动触发走 admin 的 3min 请求超时，超了等于白跑。
+	if ugRoundTimeout >= 3*time.Minute {
+		t.Fatalf("ugRoundTimeout = %v，不能达到宿主的 3min 请求上限", ugRoundTimeout)
 	}
 	if ugClaimReserve <= ugDynamicTimeout {
 		t.Fatalf("ugClaimReserve = %v，必须大于一次动态端点超时 %v，否则会反复起必然超时的请求",
@@ -351,7 +373,7 @@ func TestTaskSpecsFollowRegion(t *testing.T) {
 	if spec.Label != "活动福利领取" {
 		t.Errorf("Label = %q（控制台原样展示）", spec.Label)
 	}
-	if spec.Description != "领取 Trae 国内版的竞赛奖励与作品抽奖" {
+	if !strings.Contains(spec.Description, "活动中心") || !strings.Contains(spec.Description, "分享裂变") {
 		t.Errorf("Description = %q（控制台原样展示，改文案要同步这里）", spec.Description)
 	}
 	if spec.Route != "/ug/claim" {
@@ -716,12 +738,20 @@ func TestClaimUGClaimsEveryClaimableActivity(t *testing.T) {
 	if claimed != 3 {
 		t.Fatalf("活动领到 %d 项，want 3：%+v", claimed, results)
 	}
+	// 未知类型的展示名兜底成 activity_id，不能出现空标签或「未知活动」之外的裸空。
+	if label := ugResultByKey(t, results)["activity:promo_a"].Label; !strings.Contains(label, "promo_a") {
+		t.Fatalf("未知类型的展示名应兜底成 activity_id，得到 %q", label)
+	}
 }
 
+// 这里的 999 是刻意的不存在值：上游已知类型是 102–107，而它们要么注册即发
+// （102）、要么走专用接口（103/104）、要么需用户自己动手（105–107），
+// 全都进不了一键领取。所以「能被 activity/action 触发的」恰恰只剩未知类型，
+// 这份 fixture 覆盖的就是这条兜底路径；已知类型的行为另由 ugTypeSpecs 用例锁。
 const ugClaimableTableFixture = `{"commercial_activities":[
-	{"activity_id":"promo_a","activity_type":101,"enabled":true,"work_extra":{"granted":false,"grantable":true,"general_credits":100}},
-	{"activity_id":"promo_b","activity_type":101,"enabled":true,"work_extra":{"granted":false,"grantable":true,"general_credits":200}},
-	{"activity_id":"promo_c","activity_type":101,"enabled":true,"work_extra":{"granted":false,"grantable":true,"work_credits":300}}
+	{"activity_id":"promo_a","activity_type":999,"enabled":true,"work_extra":{"granted":false,"grantable":true,"general_credits":100}},
+	{"activity_id":"promo_b","activity_type":999,"enabled":true,"work_extra":{"granted":false,"grantable":true,"general_credits":200}},
+	{"activity_id":"promo_c","activity_type":999,"enabled":true,"work_extra":{"granted":false,"grantable":true,"work_credits":300}}
 ]}`
 
 func TestClaimUGActivityActionNeedsPrereq(t *testing.T) {
@@ -767,8 +797,18 @@ func TestClaimUGActivityInfoFailureKeepsFixedResults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("活动表故障不该让整轮失败：%v", err)
 	}
-	if len(results) != len(UGActions()) {
-		t.Fatalf("活动表故障时应只剩固定端点结果，得到 %d 条：%+v", len(results), results)
+	// 固定端点照跑，活动表故障要留一条可见的失败——静默吞掉会让
+	// 「活动中心挂了」和「这轮确实没活动」长得一模一样。
+	if len(results) != len(UGActions())+1 {
+		t.Fatalf("活动表故障时应是固定端点结果 + 一条失败，得到 %d 条：%+v", len(results), results)
+	}
+	byKey := ugResultByKey(t, results)
+	failure := byKey["activities"]
+	if failure.Status != UGFailed {
+		t.Fatalf("活动表故障应记为 UGFailed，得到 %v", failure.Status)
+	}
+	if !strings.Contains(failure.Message, "500") {
+		t.Fatalf("失败原因应带上上游状态码，得到 %q", failure.Message)
 	}
 }
 
@@ -885,5 +925,162 @@ func TestSummarizeUGCountsPrereqAsPending(t *testing.T) {
 	}
 	if !strings.Contains(summary, "失败 0 项") {
 		t.Fatalf("需前置不该计入失败：%s", summary)
+	}
+}
+
+// TestSummarizeUGShowsInviteCode 验证：带信息量的「暂不可领」必须逐条展示。
+//
+// 邀请码、「已邀请 N 人其中 M 人待发放」、「活动未开始」都走 UGUnavailable +
+// Message，压成名字列表等于把用户唯一能行动的信息丢掉。
+func TestSummarizeUGShowsInviteCode(t *testing.T) {
+	summary := SummarizeUG([]UGResult{
+		{Key: "fission:1", Label: "分享裂变", Status: UGUnavailable, Message: "还没有被邀请人，邀请码 6DXPMKYC5V23"},
+		{Key: "fission:2", Label: "分享裂变", Status: UGUnavailable, Message: "已邀请 3 人，其中 2 人待发放"},
+		{Key: "activity:x", Label: "作品抽奖", Status: UGUnavailable, Message: "当前不可领"},
+	})
+	if !strings.Contains(summary, "6DXPMKYC5V23") {
+		t.Fatalf("邀请码必须在汇总里可见，得到：%s", summary)
+	}
+	if !strings.Contains(summary, "2 人待发放") {
+		t.Fatalf("待发放进度必须在汇总里可见，得到：%s", summary)
+	}
+	if !strings.Contains(summary, "作品抽奖") {
+		t.Fatalf("无信息量的条目应压成名字列表，得到：%s", summary)
+	}
+}
+
+// TestSummarizeUGKeepsSoftUnavailableCompact 验证：上游泛化文案仍然压缩。
+func TestSummarizeUGKeepsSoftUnavailableCompact(t *testing.T) {
+	summary := SummarizeUG([]UGResult{
+		{Key: "a", Label: "甲", Status: UGUnavailable, Message: "活动暂不可用"},
+		{Key: "b", Label: "乙", Status: UGUnavailable, Message: ""},
+	})
+	if strings.Count(summary, "\n") > 0 {
+		t.Fatalf("泛化文案应压成一行，得到：%s", summary)
+	}
+	if !strings.Contains(summary, "甲") || !strings.Contains(summary, "乙") {
+		t.Fatalf("压缩后仍要点名，得到：%s", summary)
+	}
+}
+
+// TestClaimUGActivityAction401AbortsRound 验证：活动触发 401 与固定端点同口径。
+//
+// 继续打剩下每条活动只会拿同一个 401，宿主也看不到「需要重新登录」。
+func TestClaimUGActivityAction401AbortsRound(t *testing.T) {
+	stubHost(t)
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case EpUGActivityInfo:
+			_, _ = w.Write([]byte(ugClaimableTableFixture))
+		case EpUGActivityAction:
+			atomic.AddInt32(&calls, 1)
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"code":401,"message":"unauthorized"}`))
+		case EpCodeFissionShareStatus:
+			_, _ = w.Write([]byte(`{"code":9090,"message":"活动暂不可用"}`))
+		default:
+			_, _ = w.Write([]byte(`{"code":0,"message":"ok"}`))
+		}
+	}))
+	defer server.Close()
+
+	_, err := ClaimUG(context.Background(), ugTestCredential(), ugTestConfig(t, server.URL))
+	if err == nil {
+		t.Fatal("活动触发 401 应终止整轮并返回错误")
+	}
+	failure, ok := err.(*core.Failure)
+	if !ok || failure.Kind != core.FailureKindCredential {
+		t.Fatalf("401 应归为凭证失效，得到 %T %v", err, err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("凭证失效后不该继续打剩下活动，实际打了 %d 次", got)
+	}
+}
+
+// TestClaimUGActivityActionSuccessMessageIsClaimed 验证：code=0 一律算已领取。
+//
+// "success" 是最常见的成功文案，把它当前置条件会把正常发放记成失败。
+func TestClaimUGActivityActionSuccessMessageIsClaimed(t *testing.T) {
+	for _, message := range []string{"success", "", "SUCCESS", "领取成功"} {
+		t.Run(message, func(t *testing.T) {
+			stubHost(t)
+			server := httptest.NewServer(ugStub(map[string]string{
+				EpUGActivityInfo:   ugClaimableTableFixture,
+				EpUGActivityAction: `{"code":0,"message":"` + message + `"}`,
+			}, nil))
+			defer server.Close()
+
+			results, err := ClaimUG(context.Background(), ugTestCredential(), ugTestConfig(t, server.URL))
+			if err != nil {
+				t.Fatalf("不该报错：%v", err)
+			}
+			result := ugResultByKey(t, results)["activity:promo_a"]
+			if result.Status != UGClaimed {
+				t.Fatalf("code=0 message=%q 应记为已领取，得到 %v：%s", message, result.Status, result.Message)
+			}
+		})
+	}
+}
+
+// TestClaimUGEnabledMissingStillClaimed 验证：enabled 缺失时按启用处理。
+//
+// 上游哪天不再下发这个字段，整张表被静默跳过是最难发现的一类失效。
+func TestClaimUGEnabledMissingStillClaimed(t *testing.T) {
+	stubHost(t)
+	server := httptest.NewServer(ugStub(map[string]string{
+		EpUGActivityInfo: `{"commercial_activities":[
+			{"activity_id":"no_flag","activity_type":999,"work_extra":{"granted":false,"grantable":true,"general_credits":100}},
+			{"activity_id":"off_flag","activity_type":999,"enabled":false,"work_extra":{"granted":false,"grantable":true,"general_credits":100}}
+		]}`,
+		EpUGActivityAction: `{"code":0,"message":"success"}`,
+	}, nil))
+	defer server.Close()
+
+	results, err := ClaimUG(context.Background(), ugTestCredential(), ugTestConfig(t, server.URL))
+	if err != nil {
+		t.Fatalf("不该报错：%v", err)
+	}
+	byKey := ugResultByKey(t, results)
+	if _, ok := byKey["activity:no_flag"]; !ok {
+		t.Fatalf("enabled 缺失应按启用处理并照领，实际结果：%+v", results)
+	}
+	if _, ok := byKey["activity:off_flag"]; ok {
+		t.Fatalf("enabled=false 的活动不该被触发，实际结果：%+v", results)
+	}
+}
+
+// TestClaimUGFissionStatusErrorVisible 验证：裂变探测失败要留一条可见失败。
+func TestClaimUGFissionStatusErrorVisible(t *testing.T) {
+	stubHost(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case EpUGActivityInfo:
+			_, _ = w.Write([]byte(`{"commercial_activities":[
+				{"activity_id":"fis_1","activity_type":103,"enabled":true,"work_extra":{"granted":false}}
+			]}`))
+		case EpCodeFissionShareStatus:
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"code":500,"message":"内部错误"}`))
+		default:
+			_, _ = w.Write([]byte(`{"code":0,"message":"ok"}`))
+		}
+	}))
+	defer server.Close()
+
+	results, err := ClaimUG(context.Background(), ugTestCredential(), ugTestConfig(t, server.URL))
+	if err != nil {
+		t.Fatalf("单期裂变查询失败不该让整轮失败：%v", err)
+	}
+	// 裂变期号来自 EpCodeFissionShareStatus 的固定参数，不是活动表里的 id。
+	result, ok := ugResultByKey(t, results)["fission:code_fission_202609"]
+	if !ok {
+		t.Fatalf("裂变查询失败必须留一条结果，实际：%+v", results)
+	}
+	if result.Status != UGFailed {
+		t.Fatalf("裂变查询失败应记为 UGFailed，得到 %v：%s", result.Status, result.Message)
+	}
+	if !strings.Contains(result.Message, "500") {
+		t.Fatalf("失败原因应带上上游状态码，得到 %q", result.Message)
 	}
 }

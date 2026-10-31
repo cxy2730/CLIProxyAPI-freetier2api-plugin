@@ -187,6 +187,14 @@ const ugDynamicTimeout = 15 * time.Second
 // 又不会把整轮拖过宿主上限（总耗时恒不超过 ugRoundTimeout）。
 const ugClaimReserve = ugDynamicTimeout + 2*time.Second
 
+// ugFissionReserve 是留给分享裂变这一整块的预算。
+//
+// 裂变不是单个请求：share_status 判这期在不在、share_link 取邀请码、
+// grant 领取，三次各 ugDynamicTimeout。活动触发只看 ugClaimReserve 就会把
+// 时间吃到只剩十几秒，裂变三次请求全被 ctx 截断——表现为「活动领到了，
+// 裂变永远报错」。所以触发的门限必须是 ugFissionReserve + ugClaimReserve。
+const ugFissionReserve = 3 * ugDynamicTimeout
+
 // ugHasBudget 判断 ctx 剩余时间是否还够再打一次动态端点。
 func ugHasBudget(ctx context.Context, need time.Duration) bool {
 	deadline, okDeadline := ctx.Deadline()
@@ -553,6 +561,19 @@ func (r UGResult) Describe() string {
 	}
 }
 
+// ugUnavailableWorthShowing 判断一条「暂不可领」是否带着用户能行动的信息。
+//
+// 邀请码、邀请进度、活动未开始、走别的链路，这些都必须逐条展示；只有
+// 「当前不可领」与上游的泛化「活动暂不可用」可以压成名字列表，免得汇总行
+// 被无信息量的条目撑爆。
+func ugUnavailableWorthShowing(message string) bool {
+	detail := strings.TrimSpace(message)
+	if detail == "" || detail == "当前不可领" {
+		return false
+	}
+	return !core.ContainsAny(strings.ToLower(detail), ugSoftUnavailableMarkers)
+}
+
 // ugDetailText 把上游的机器文案翻成人话，认不出的原样返回（不吞原始信息）。
 func ugDetailText(message string) string {
 	// 缺参类文案（param is invalid / 9080）已随「需要入参的端点」一起退出
@@ -619,12 +640,18 @@ func ClaimUG(ctx context.Context, cred *Credential, cfg Config) ([]UGResult, err
 
 // ugRoundTimeout 是一轮活动福利领取的总上限。
 //
-// 必须严格大于最坏耗时：2 个固定端点各 perRequestTimeout（60s）+ 活动表与
-// 裂变 status/grant 共 3 次各 ugDynamicTimeout（45s）+ 至少一次活动触发的
-// 预留 ugClaimReserve（17s）= 122s，取 150s 留 28s 余量。活动触发条数不写死，
-// 靠 claimUGActivities 里的 ugHasBudget 按剩余预算截断，总耗时恒不超过本值。
+// 最坏耗时 = 2×perRequestTimeout（2 个固定端点，60s）
+//   - 1×ugDynamicTimeout（activity/info，15s）
+//   - N×ugDynamicTimeout（activity/action 触发）
+//   - ugFissionReserve（share_status + share_link + grant，45s）
+//
+// N 不写死，由触发门限 ugHasBudget(ugFissionReserve+ugClaimReserve) 推出：
+// 165s 起手，扣掉 60+15 后剩 90s，每次触发前要求剩余 ≥62s，
+// 于是 N ≤ 2（90 → 75 → 60 停），最坏 60+15+30+45 = 150s < 165s。
+// 宿主上限：手动触发走 internal/admin/admin.go:26 的 requestTimeout = 3min；
+// 后台「一键完成」走 internal/tasks/autoall.go 的 autoAllTimeout = 30min。
 // 加端点时同步上调（ug_test.go 用同一组常量验算，改超时不会漏改预算）。
-const ugRoundTimeout = 150 * time.Second
+const ugRoundTimeout = 165 * time.Second
 
 // claimUGOne 打一个端点并归类结果。
 //
@@ -841,7 +868,15 @@ func SummarizeUG(results []UGResult) string {
 			parts = append(parts, result.Describe())
 		case UGUnavailable:
 			unavailable++
-			names = append(names, result.Label)
+			// 有信息量的一档必须逐条展示：邀请码、「已邀请 N 人其中 M 人待
+			// 发放」、「活动未开始」都是 UGUnavailable + Message 表达的，
+			// 压成名字列表就等于把用户唯一能行动的信息丢掉。只有「当前不可
+			// 领」这类空话才压缩。
+			if ugUnavailableWorthShowing(result.Message) {
+				parts = append(parts, result.Describe())
+			} else {
+				names = append(names, result.Label)
+			}
 		case UGNeedsPrereq:
 			// 前置条件没满足不是故障，别混进失败数里吓人。
 			pending++
@@ -889,7 +924,7 @@ const (
 type ugActivity struct {
 	ID        string `json:"activity_id"`
 	Type      int    `json:"activity_type"`
-	Enabled   bool   `json:"Enabled"`
+	Enabled   *bool  `json:"enabled"`
 	StartMs   int64  `json:"start_time_ms"`
 	EndMs     int64  `json:"end_time_ms"`
 	WorkExtra struct {
@@ -902,27 +937,61 @@ type ugActivity struct {
 	} `json:"work_extra"`
 }
 
+// ugTypeSpec 是 activity_type 的唯一类型表：名字、是否要用户自己动手、
+// 需前置时怎么说明，全在这里。新增类型只改这一处，不要再散到几个 switch。
+type ugTypeSpec struct {
+	label  string
+	manual bool
+	hint   string
+}
+
+var ugTypeSpecs = map[int]ugTypeSpec{
+	ugTypeNewUser: {label: "新用户奖励"},
+	ugTypeFission: {
+		label: "分享裂变",
+		hint:  "需先邀请新用户注册，被邀请人达标后自动发放",
+	},
+	ugTypeCheckin: {label: "每日签到"},
+	ugTypeSendMessage: {
+		label:  "发消息奖励",
+		manual: true,
+		hint:   "需先在 Trae 内发过消息，之后由上游自动发放",
+	},
+	ugTypeDesktopDownload: {
+		label:  "桌面端下载奖励",
+		manual: true,
+		hint:   "需先下载并登录 Trae 桌面端，装好后由上游自动发放",
+	},
+	ugTypeStudentAuth: {
+		label:  "学生认证奖励",
+		manual: true,
+		hint:   "需先在 Trae 完成学生认证，认证通过后由上游自动发放",
+	},
+}
+
+// spec 返回该类型的规格；未知类型返回 ok=false。
+func (a ugActivity) spec() (ugTypeSpec, bool) {
+	spec, ok := ugTypeSpecs[a.Type]
+	return spec, ok
+}
+
+// enabled 判断上游是否明确关掉了这条活动。
+//
+// enabled 缺失时按「启用」处理：上游哪天不再下发这个字段，整张表会被
+// 静默跳过，那是最难发现的一类失效。
+func (a ugActivity) enabled() bool {
+	return a.Enabled == nil || *a.Enabled
+}
+
 // label 返回给人看的中文名。
 func (a ugActivity) label() string {
-	switch a.Type {
-	case ugTypeNewUser:
-		return "新用户奖励"
-	case ugTypeFission:
-		return "分享裂变"
-	case ugTypeCheckin:
-		return "每日签到"
-	case ugTypeSendMessage:
-		return "发消息奖励"
-	case ugTypeDesktopDownload:
-		return "桌面端下载奖励"
-	case ugTypeStudentAuth:
-		return "学生认证奖励"
-	default:
-		if a.ID != "" {
-			return a.ID
-		}
-		return "未知活动"
+	if spec, ok := a.spec(); ok {
+		return spec.label
 	}
+	if a.ID != "" {
+		return a.ID
+	}
+	return "未知活动"
 }
 
 // rewardText 返回奖励额度文案，没给额度时返回空串。
@@ -975,12 +1044,8 @@ func (a ugActivity) autoGrant() bool {
 // 认证。桌面端下载（要先装客户端）、发消息（要先在 Trae 里聊天）同理。
 // 这类前置插件拿不到，打 action 是纯浪费，也不该当成福利推送出去。
 func (a ugActivity) needsManualAction() bool {
-	switch a.Type {
-	case ugTypeSendMessage, ugTypeDesktopDownload, ugTypeStudentAuth:
-		return true
-	default:
-		return false
-	}
+	spec, ok := a.spec()
+	return ok && spec.manual
 }
 
 // fetchUGActivities 拉取当前账号可见的活动表。
@@ -1020,7 +1085,7 @@ func fetchUGActivities(ctx context.Context, cfg Config, headers map[string]strin
 //   - 需要用户自己去客户端里做前置动作的（发消息 / 桌面端 / 学生认证）见
 //     needsManualAction：action 只会回 200 空响应，纯浪费一次请求
 func claimableActivity(a ugActivity, now time.Time) bool {
-	if !a.Enabled || a.ID == "" {
+	if !a.enabled() || a.ID == "" {
 		return false
 	}
 	if a.Type == ugTypeCheckin || a.Type == ugTypeNewUser || a.needsManualAction() {
@@ -1033,7 +1098,7 @@ func claimableActivity(a ugActivity, now time.Time) bool {
 }
 
 // claimUGActivity 对单个活动触发一次发放。
-func claimUGActivity(ctx context.Context, cfg Config, headers map[string]string, a ugActivity) UGResult {
+func claimUGActivity(ctx context.Context, cfg Config, headers map[string]string, a ugActivity) (UGResult, error) {
 	ctx, cancel := ugDynamicCtx(ctx)
 	defer cancel()
 	result := UGResult{Key: "activity:" + a.ID, Label: a.label()}
@@ -1045,12 +1110,14 @@ func claimUGActivity(ctx context.Context, cfg Config, headers map[string]string,
 	if errDo != nil {
 		result.Status = UGFailed
 		result.Message = errDo.Error()
-		return result
+		return result, nil
 	}
 	if status == http.StatusUnauthorized {
+		// 与 claimUGOne / fetchUGActivities 同口径：凭证失效就终止整轮。
+		// 继续打剩下的活动只会拿同一个 401，宿主也看不到「需要重新登录」。
 		result.Status = UGFailed
 		result.Message = "登录态已失效（HTTP 401），请重新登录后再领取"
-		return result
+		return result, &core.Failure{Kind: core.FailureKindCredential, Status: status, Msg: result.Message}
 	}
 	// 空响应体 / 空对象：上游接受了调用但没有给出任何发放内容。
 	//
@@ -1066,22 +1133,18 @@ func claimUGActivity(ctx context.Context, cfg Config, headers map[string]string,
 		if len(strings.TrimSpace(string(body))) <= 2 {
 			result.Status = UGNeedsPrereq
 			result.Message = a.prereqHint()
-			return result
+			return result, nil
 		}
 		result.Status = UGFailed
 		result.Message = truncateBody(string(body))
-		return result
+		return result, nil
 	}
 	result.Code = *envelope.Code
 	result.Message = core.FirstNonEmpty(strings.TrimSpace(envelope.Message), strings.TrimSpace(envelope.Msg))
 	switch {
 	case status == http.StatusOK && *envelope.Code == 0:
-		if strings.TrimSpace(result.Message) == "" || result.Message == "success" {
-			// 回了 0 但没有任何说明：与空对象同义，按需前置处理。
-			result.Status = UGNeedsPrereq
-			result.Message = a.prereqHint()
-			return result
-		}
+		// 业务码 0 就是成功。「上游没写说明」与「说明恰好是 success」都
+		// 不能当前置条件——真正的前置场景上游回的是空对象（上面那支）。
 		result.Status = UGClaimed
 	case status == http.StatusOK:
 		result.Status = classifyUGMessage(result.Message)
@@ -1090,7 +1153,7 @@ func claimUGActivity(ctx context.Context, cfg Config, headers map[string]string,
 			if classified := classifyUGMessage(result.Message); classified == UGUnavailable || classified == UGAlready {
 				result.Status = classified
 				result.Message = a.unavailableHint(result.Message)
-				return result
+				return result, nil
 			}
 		}
 		result.Status = UGFailed
@@ -1098,23 +1161,15 @@ func claimUGActivity(ctx context.Context, cfg Config, headers map[string]string,
 			result.Message = fmt.Sprintf("HTTP %d", status)
 		}
 	}
-	return result
+	return result, nil
 }
 
 // prereqHint 说明该活动还差什么前置动作。
 func (a ugActivity) prereqHint() string {
-	switch a.Type {
-	case ugTypeStudentAuth:
-		return "需先在 Trae 完成学生认证，认证通过后由上游自动发放"
-	case ugTypeDesktopDownload:
-		return "需先下载并登录 Trae 桌面端，装好后由上游自动发放"
-	case ugTypeSendMessage:
-		return "需先在 Trae 内发过消息，之后由上游自动发放"
-	case ugTypeFission:
-		return "需先邀请新用户注册，被邀请人达标后自动发放"
-	default:
-		return "上游未说明发放条件，暂未发放"
+	if spec, ok := a.spec(); ok && spec.hint != "" {
+		return spec.hint
 	}
+	return "上游未说明发放条件，暂未发放"
 }
 
 // unavailableHint 给「暂不可领」补上人话原因。
@@ -1138,8 +1193,14 @@ func claimUGActivities(ctx context.Context, cfg Config, headers map[string]strin
 		if failure, okFailure := errFetch.(*core.Failure); okFailure && failure.Kind == core.FailureKindCredential {
 			return nil, nil, errFetch
 		}
-		// 拿不到活动表不影响原有端点继续跑，如实记一条即可。
-		return nil, nil, nil
+		// 拿不到活动表不影响原有端点继续跑，但必须留一条可见的失败，
+		// 静默返回会让「活动中心挂了」和「这轮确实没活动」长得一模一样。
+		return nil, []UGResult{{
+			Key:     "activities",
+			Label:   "活动中心",
+			Status:  UGFailed,
+			Message: errFetch.Error(),
+		}}, nil
 	}
 	now := time.Now()
 	// 先领，再出总览：已在本轮触发过的活动不再重复铺一条「等待本轮触发」，
@@ -1154,14 +1215,20 @@ func claimUGActivities(ctx context.Context, cfg Config, headers map[string]strin
 		}
 		// 能领的全领：不按条数截断，只按剩余预算截断。预算不够时剩下的活动
 		// 会在总览里显示成「可领取，等待本轮触发」，下一轮接着领。
-		if !ugHasBudget(ctx, ugClaimReserve) {
+		// 门限里要预留整块裂变预算，否则触发会把时间吃到只剩几秒，
+		// 后面三次裂变请求全被 ctx 截断。
+		if !ugHasBudget(ctx, ugFissionReserve+ugClaimReserve) {
 			break
 		}
-		results = append(results, claimUGActivity(ctx, cfg, headers, a))
+		result, errClaim := claimUGActivity(ctx, cfg, headers, a)
+		results = append(results, result)
+		if errClaim != nil {
+			return nil, results, errClaim
+		}
 		claimedIDs[a.ID] = true
 	}
 	for _, a := range activities {
-		if !a.Enabled || claimedIDs[a.ID] || !worthReporting(a, now) {
+		if !a.enabled() || claimedIDs[a.ID] || !worthReporting(a, now) {
 			continue
 		}
 		overview = append(overview, describeActivity(a, now))
@@ -1193,9 +1260,7 @@ func describeActivity(a ugActivity, now time.Time) UGResult {
 		result.Label = fmt.Sprintf("%s（%s）", a.label(), reward)
 	}
 	switch {
-	case a.expired(now):
-		result.Status = UGUnavailable
-		result.Message = "活动已结束"
+	// 已结束的活动在 worthReporting 就被滤掉了，这里不再重复一支死分支。
 	case a.notStarted(now):
 		result.Status = UGUnavailable
 		result.Message = "活动未开始"
@@ -1239,18 +1304,19 @@ const (
 var fissionActivityCandidates = []string{"code_fission_202609"}
 
 // fissionInvitee 是邀请记录里的一条。
+//
+// 只留真正参与判断与展示的两个字段：status 决定要不要 grant，
+// inviter_reward_credits 用来累计进度。名字与时间目前没有任何用途，
+// 不声明的字段照样能解析（encoding/json 会跳过未知键）。
 type fissionInvitee struct {
-	Name      string `json:"invitee_name"`
-	Reward    int64  `json:"inviter_reward_credits"`
-	Status    int    `json:"status"`
-	CreatedAt int64  `json:"created_at"`
+	Reward int64 `json:"inviter_reward_credits"`
+	Status int   `json:"status"`
 }
 
 // fissionStatus 是一次 share_status 的结果。
 type fissionStatus struct {
 	Available bool             `json:"-"`
 	Invitees  []fissionInvitee `json:"invitees"`
-	HasMore   bool             `json:"has_more"`
 }
 
 // fetchFissionStatus 查一期的邀请进度。
@@ -1316,7 +1382,15 @@ func claimFissionRewards(ctx context.Context, cfg Config, headers map[string]str
 			if failure, okFailure := errStatus.(*core.Failure); okFailure && failure.Kind == core.FailureKindCredential {
 				return results, errStatus
 			}
-			// 单期查询失败不影响别的期，也不该打断整轮领取。
+			// 单期查询失败不影响别的期，但要留一条可见的失败：
+			// 静默 continue 会让「裂变端点坏了」和「这一期没有裂变活动」
+			// 在结果里完全一样，用户只会觉得积分凭空少了。
+			results = append(results, UGResult{
+				Key:     "fission:" + activityID,
+				Label:   "分享裂变",
+				Status:  UGFailed,
+				Message: errStatus.Error(),
+			})
 			continue
 		}
 		if !available {
@@ -1326,7 +1400,7 @@ func claimFissionRewards(ctx context.Context, cfg Config, headers map[string]str
 		if len(state.Invitees) == 0 {
 			// 还没被邀请人时把邀请码带出来，用户才知道拿什么去分享。
 			// 取不到就不提，一次辅助请求不该影响结论。
-			if code, _, errCode := fetchFissionInviteCode(ctx, cfg, headers, activityID); errCode == nil && code != "" {
+			if code, errCode := fetchFissionInviteCode(ctx, cfg, headers, activityID); errCode == nil && code != "" {
 				line.Message = fmt.Sprintf("活动进行中，还没有被邀请人（邀请码 %s）", code)
 			}
 		}
@@ -1425,16 +1499,16 @@ func grantFission(ctx context.Context, cfg Config, headers map[string]string, ac
 // fetchFissionInviteCode 取当前这期的邀请码（用于分享）。
 //
 // 邀请码是稳定值，取到一次就该缓存；这里只负责取，不负责缓存。
-func fetchFissionInviteCode(ctx context.Context, cfg Config, headers map[string]string, activityID string) (string, string, error) {
+func fetchFissionInviteCode(ctx context.Context, cfg Config, headers map[string]string, activityID string) (string, error) {
 	ctx, cancel := ugDynamicCtx(ctx)
 	defer cancel()
 	payload, _ := json.Marshal(map[string]string{"activity_id": activityID})
 	status, body, errDo := postJSON(ctx, cfg.CheckinHost+EpCodeFissionShareLink, headers, payload)
 	if errDo != nil {
-		return "", "", errDo
+		return "", errDo
 	}
 	if status == http.StatusUnauthorized {
-		return "", "", &core.Failure{
+		return "", &core.Failure{
 			Kind:   core.FailureKindCredential,
 			Status: status,
 			Msg:    "登录态已失效，请重新登录后再生成邀请码",
@@ -1445,17 +1519,16 @@ func fetchFissionInviteCode(ctx context.Context, cfg Config, headers map[string]
 		Message    string `json:"message"`
 		Msg        string `json:"msg"`
 		InviteCode string `json:"invite_code"`
-		ShareURL   string `json:"share_url"`
 	}
 	if errJSON := json.Unmarshal(body, &envelope); errJSON != nil {
-		return "", "", fmt.Errorf("share_link 响应无法解析：%s", truncateBody(string(body)))
+		return "", fmt.Errorf("share_link 响应无法解析：%s", truncateBody(string(body)))
 	}
 	message := core.FirstNonEmpty(strings.TrimSpace(envelope.Message), strings.TrimSpace(envelope.Msg))
 	if envelope.Code == nil {
-		return "", "", fmt.Errorf("share_link 响应不含业务码：%s", truncateBody(string(body)))
+		return "", fmt.Errorf("share_link 响应不含业务码：%s", truncateBody(string(body)))
 	}
 	if *envelope.Code != 0 {
-		return "", "", fmt.Errorf("share_link code=%d：%s", *envelope.Code, message)
+		return "", fmt.Errorf("share_link code=%d：%s", *envelope.Code, message)
 	}
-	return strings.TrimSpace(envelope.InviteCode), strings.TrimSpace(envelope.ShareURL), nil
+	return strings.TrimSpace(envelope.InviteCode), nil
 }
