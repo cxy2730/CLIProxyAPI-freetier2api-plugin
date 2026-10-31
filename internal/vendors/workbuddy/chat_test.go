@@ -486,3 +486,119 @@ func TestSanitizeMessagesCoversToolArguments(t *testing.T) {
 		t.Fatal("tool_call arguments must be sanitized even when content is null")
 	}
 }
+
+// TestSanitizeRewritesDSHFingerprints 验证 DSH（DeepSeek Harness）的模板句被最小改写。
+//
+// 触发源来自 issue #57 的单字消融对照：网关对 system/assistant 正文做逐字匹配，
+// 命中 DSH 的模板句即返回 11128。规则本身在 assets/sanitize_rules.json，
+// 本测试锁住"改写过之后这些字面量不再存在"这一可验证事实（上游是否放行只能实况验证）。
+func TestSanitizeRewritesDSHFingerprints(t *testing.T) {
+	rules, regexes := loadSanitizeRules()
+	if len(rules.Features) == 0 || len(rules.Rewrites) == 0 {
+		t.Skip("sanitize rules are not embedded")
+	}
+
+	cases := []struct {
+		name     string
+		input    string
+		contains []string
+		absent   []string
+	}{
+		{
+			name:     "file reference declaration",
+			input:    "Tokens prefixed with @ are paths the user explicitly referenced.",
+			contains: []string{"Tokens prefixed with (at) are paths"},
+			absent:   []string{"Tokens prefixed with @ are paths"},
+		},
+		{
+			name:     "kernel identity sentence",
+			input:    "You are an AI agent powered by DeepSeek Harness. Follow the rules.",
+			contains: []string{"You are an AI agent powered by DeepSeek-Harness."},
+			absent:   []string{"DeepSeek Harness"},
+		},
+		{
+			// 部分 DSH 构建在 DeepSeek 与 Harness 之间插零宽空格，字面量改写会落空。
+			name:     "kernel identity with zero width space",
+			input:    "You are an AI agent powered by DeepSeek\u200b Harness.",
+			contains: []string{"You are an AI agent powered by DeepSeek-Harness."},
+			absent:   []string{"DeepSeek Harness", "\u200b"},
+		},
+		{
+			name:     "coding agent declaration",
+			input:    "You are a coding agent powered by Acme Runtime.",
+			contains: []string{"You are a coding agent running on Acme Runtime."},
+			absent:   []string{"You are a coding agent powered by"},
+		},
+		{
+			name:     "web gui paragraph",
+			input:    "Open the DeepSeek Harness Web GUI to review the run.",
+			contains: []string{"this Web GUI"},
+			absent:   []string{"DeepSeek Harness"},
+		},
+		{
+			name:     "web gui url",
+			input:    "Current DeepSeek Harness Web GUI URL: http://127.0.0.1:8080",
+			contains: []string{"Current Web GUI URL: http://127.0.0.1:8080"},
+			absent:   []string{"DeepSeek Harness"},
+		},
+		{
+			name:     "catch all remaining occurrences",
+			input:    "The DeepSeek Harness client sends this.",
+			contains: []string{"The DeepSeek-Harness client sends this."},
+			absent:   []string{"DeepSeek Harness"},
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := sanitizeText(testCase.input, rules, regexes)
+			for _, want := range testCase.contains {
+				if !strings.Contains(got, want) {
+					t.Fatalf("sanitized text must contain %q, got %q", want, got)
+				}
+			}
+			for _, unwanted := range testCase.absent {
+				if strings.Contains(got, unwanted) {
+					t.Fatalf("sanitized text must not contain %q, got %q", unwanted, got)
+				}
+			}
+		})
+	}
+}
+
+// TestSanitizeCoversSystemMessage 验证 system 消息里的 DSH 模板句同样被净化。
+//
+// 网关扫描 system/assistant 正文；早期实现只在 content 缺失时跳过整条消息，
+// 这里是同一类覆盖的回归：system 角色不能漏。
+func TestSanitizeCoversSystemMessage(t *testing.T) {
+	rules, _ := loadSanitizeRules()
+	if len(rules.Rewrites) == 0 {
+		t.Skip("sanitize rules are not embedded")
+	}
+
+	system := "You are an AI agent powered by DeepSeek Harness. Tokens prefixed with @ are paths."
+	messages := []any{map[string]any{"role": "system", "content": system}}
+	sanitizeMessages(messages)
+
+	got, _ := messages[0].(map[string]any)["content"].(string)
+	if strings.Contains(got, "DeepSeek Harness") || strings.Contains(got, "Tokens prefixed with @") {
+		t.Fatalf("system message was not sanitized: %q", got)
+	}
+	if !strings.Contains(got, "DeepSeek-Harness") {
+		t.Fatalf("system message lost the rewritten marker: %q", got)
+	}
+}
+
+// TestSanitizeLeavesPlainTextWithZeroWidthAlone 验证未命中特征的正文不做字符级改动。
+//
+// 零宽字符清理只在指纹预检命中后执行；普通用户消息（哪怕带零宽字符）必须原样透传。
+func TestSanitizeLeavesPlainTextWithZeroWidthAlone(t *testing.T) {
+	rules, regexes := loadSanitizeRules()
+	if len(rules.Features) == 0 {
+		t.Skip("sanitize rules are not embedded")
+	}
+	plain := "hello\u200bworld, this is a normal message"
+	if got := sanitizeText(plain, rules, regexes); got != plain {
+		t.Fatalf("plain text must pass through unchanged, got %q", got)
+	}
+}
