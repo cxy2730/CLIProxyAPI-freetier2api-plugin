@@ -198,8 +198,13 @@ const ugFissionPerCandidateReserve = 3 * ugDynamicTimeout
 // 按候选数算而不是写死 45s：fissionActivityCandidates 加一期，预算跟着涨，
 // 否则新增候选会从后面几期嘴里抢时间，表现为「前一期领到、后一期永远报错」。
 // 活动触发只看 ugClaimReserve 就会把时间吃到只剩十几秒，裂变请求全被 ctx
-// 截断——所以触发的门限必须是 ugFissionReserve + ugClaimReserve。
-var ugFissionReserve = time.Duration(len(fissionActivityCandidates)) * ugFissionPerCandidateReserve
+// 截断——所以触发的门限必须是 ugFissionReserve() + ugClaimReserve。
+//
+// 用函数而不是包级 var：var 在包初始化时算一次，之后任何运行时 append（包括
+// 测试里往候选表追加一期）都会让预算停在旧值，直到下次重启才对齐。
+func ugFissionReserve() time.Duration {
+	return time.Duration(len(fissionActivityCandidates)) * ugFissionPerCandidateReserve
+}
 
 // ugHasBudget 判断 ctx 剩余时间是否还够再打一次动态端点。
 func ugHasBudget(ctx context.Context, need time.Duration) bool {
@@ -549,8 +554,10 @@ func (r UGResult) Describe() string {
 		return fmt.Sprintf("%s：已领取", r.Label)
 	case UGAlready:
 		// 已领取同样可能带着用户要看的信息（裂变是「已邀请 N 人，其中 M 人
-		// 待发放」），压掉就等于把邀请进度藏起来。
-		if detail := strings.TrimSpace(r.Message); detail != "" {
+		// 待发放」），压掉就等于把邀请进度藏起来。但固定端点的 message 本身
+		// 就是「该奖励已领取」，活动总览给的是「已发放」——这类文案再拼一遍
+		// 就成了「此前已领取（该奖励已领取）」，所以命中重复标记就不拼。
+		if detail := strings.TrimSpace(r.Message); detail != "" && !ugAlreadyRestates(detail) {
 			return fmt.Sprintf("%s：此前已领取（%s）", r.Label, ugDetailText(detail))
 		}
 		return fmt.Sprintf("%s：此前已领取", r.Label)
@@ -616,7 +623,7 @@ func ClaimUG(ctx context.Context, cred *Credential, cfg Config) ([]UGResult, err
 	// 预算必须严格大于「端点个数 × 单端点超时」：两者相等时，第一个端点一旦
 	// 卡满，第二个端点剩下的预算连握手都不够，结构上必然被砍掉。
 	// 超时与取消一样：把已拿到的结果带出去。
-	ctx, cancel := context.WithTimeout(ctx, ugRoundTimeout)
+	ctx, cancel := context.WithTimeout(ctx, ugRoundTimeout())
 	defer cancel()
 
 	results := make([]UGResult, 0, len(UGActions())+8)
@@ -653,22 +660,26 @@ func ClaimUG(ctx context.Context, cred *Credential, cfg Config) ([]UGResult, err
 
 // ugRoundTimeout 是一轮活动福利领取的总上限。
 //
-// 最坏耗时 = 2×perRequestTimeout（2 个固定端点，60s）
-//   - 1×ugDynamicTimeout（activity/info，15s）
-//   - N×ugDynamicTimeout（activity/action 触发）
-//   - ugFissionReserve（每期 share_status + share_link + grant，随候选数伸缩）
-//   - ugRoundSlack（余量）
+// 全部按候选数推导，没有写死的时间点：
 //
-// N 不写死，由触发门限 ugHasBudget(ugFissionReserve+ugClaimReserve) 推出：
-// 165s 起手，扣掉 60+15 后剩 90s，每次触发前要求剩余 ≥62s，
+//	最坏耗时 = 2×perRequestTimeout（2 个固定端点）
+//	         + 1×ugDynamicTimeout（activity/info）
+//	         + N×ugDynamicTimeout（activity/action 触发）
+//	         + ugFissionReserve()（每期 share_status + share_link + grant）
+//	         + ugRoundSlack（余量）
+//
+// N 不写死，由触发门限 ugHasBudget(ugFissionReserve()+ugClaimReserve) 推出：
+// 单候选时预算 165s，扣掉 60+15 后剩 90s，每次触发前要求剩余 ≥62s，
 // 于是 N ≤ 2（90 → 75 → 60 停），最坏 60+15+30+45 = 150s < 165s。
-// 裂变候选增加时 ugFissionReserve 变大，这里自动跟着涨，不必手改数字。
+// 裂变候选增加时预算与门限同时变大，这里自动跟着涨，不必手改数字。
 // 宿主上限：手动触发走 internal/admin/admin.go:26 的 requestTimeout = 3min；
 // 后台「一键完成」走 internal/tasks/autoall.go 的 autoAllTimeout = 30min。
 // 加端点时同步上调（ug_test.go 用同一组常量验算，改超时不会漏改预算）。
 const ugRoundSlack = ugDynamicTimeout
 
-var ugRoundTimeout = 2*perRequestTimeout + 3*ugDynamicTimeout + ugFissionReserve + ugRoundSlack
+func ugRoundTimeout() time.Duration {
+	return 2*perRequestTimeout + 3*ugDynamicTimeout + ugFissionReserve() + ugRoundSlack
+}
 
 // claimUGOne 打一个端点并归类结果。
 //
@@ -691,12 +702,8 @@ func claimUGOne(ctx context.Context, cfg Config, headers map[string]string, acti
 	}
 	// Code 用指针：网关回 HTML、空 body、或 {"data":{}} 时它会是 nil，此时
 	// 绝不能把零值当成 code=0（那会把失败报成「已领取」）。
-	var envelope struct {
-		Code    *int   `json:"code"`
-		Message string `json:"message"`
-		Msg     string `json:"msg"`
-	}
-	if errJSON := json.Unmarshal(body, &envelope); errJSON != nil || envelope.Code == nil {
+	envelope, errJSON := decodeUG[ugEnvelope](body)
+	if errJSON != nil || envelope.Code == nil {
 		// 少数端点（实测 claim_package）回的是纯状态对象：没有业务码，
 		// 只有 eligible / newly_granted。按 code==nil 一律归失败会把「当前
 		// 账号不满足条件」报成上游故障，所以先认状态字段再退回失败。
@@ -714,7 +721,7 @@ func claimUGOne(ctx context.Context, cfg Config, headers map[string]string, acti
 		return result, nil
 	}
 	result.Code = *envelope.Code
-	result.Message = core.FirstNonEmpty(strings.TrimSpace(envelope.Message), strings.TrimSpace(envelope.Msg))
+	result.Message = envelope.text()
 	switch {
 	case status == http.StatusOK && *envelope.Code == 0:
 		result.Status = UGClaimed
@@ -825,6 +832,11 @@ func (s ugState) describe() (UGStatus, string) {
 var (
 	ugAlreadyMarkers = []string{"已领取", "已经领取", "重复领取", "已参与", "已经参与", "已兑换", "已经兑换", "already"}
 
+	// ugAlreadyRestateMarkers 是「只换个说法重复『已领取』」的文案特征。
+	// 与 ugAlreadyMarkers 分开维护：那张表还参与 classifyUGMessage 的状态
+	// 归类，往里加词会改变归类结果；这张只影响「此前已领取（…）」要不要拼。
+	ugAlreadyRestateMarkers = []string{"已发放", "已到账", "已入账"}
+
 	// ugParamMarkers 是「上游要求额外参数」的标记。实测两个 share_link 回
 	// 4001、cobrand/claim 回 9080，文案都是「param is invalid」——这些端点
 	// 已不在 UGActions() 里（插件拿不到活动/作品 ID），但归类表仍要认识这批
@@ -845,6 +857,52 @@ var (
 		ugParamMarkers...,
 	)
 )
+
+// ugAlreadyRestates 判断一条「已领取」结果的说明是不是只在重复状态本身。
+// 命中就不在「此前已领取」后面再拼一遍，空文案同理。
+func ugAlreadyRestates(message string) bool {
+	detail := strings.ToLower(strings.TrimSpace(message))
+	if detail == "" {
+		return true
+	}
+	return core.ContainsAny(detail, ugAlreadyMarkers) || core.ContainsAny(detail, ugAlreadyRestateMarkers)
+}
+
+// ugEnvelope 是所有活动端点的公共信封：业务码 + 文案。
+//
+// Code 用指针：网关回 HTML、空 body、或 {"data":{}} 时它是 nil，绝不能把零值
+// 当成 code=0——那会把失败报成「已领取」。
+type ugEnvelope struct {
+	Code    *int   `json:"code"`
+	Message string `json:"message"`
+	Msg     string `json:"msg"`
+}
+
+// text 返回上游文案：message 优先，msg 兜底（两套网关用不同键）。
+func (e ugEnvelope) text() string {
+	return core.FirstNonEmpty(strings.TrimSpace(e.Message), strings.TrimSpace(e.Msg))
+}
+
+// decodeUG 把响应体解进 T。T 通常是 ugEnvelope；需要额外字段时用内嵌
+// ugEnvelope 的结构体（fissionEnvelope / shareLinkEnvelope），encoding/json
+// 会把内嵌字段拉平，不必为每个端点重写一遍信封。
+func decodeUG[T any](body []byte) (T, error) {
+	var value T
+	err := json.Unmarshal(body, &value)
+	return value, err
+}
+
+// fissionEnvelope 是 share_status 的信封：公共码 + 邀请进度。
+type fissionEnvelope struct {
+	ugEnvelope
+	fissionStatus
+}
+
+// shareLinkEnvelope 是 share_link 的信封：公共码 + 邀请码。
+type shareLinkEnvelope struct {
+	ugEnvelope
+	InviteCode string `json:"invite_code"`
+}
 
 // classifyUGMessage 按上游文案做粗归类。
 //
@@ -1025,6 +1083,14 @@ func (a ugActivity) rewardText() string {
 	return strings.Join(parts, " + ")
 }
 
+// activityTitle 拼「活动名（奖励）」；没给额度时只留名字。
+func (a ugActivity) activityTitle() string {
+	if reward := a.rewardText(); reward != "" {
+		return fmt.Sprintf("%s（%s）", a.label(), reward)
+	}
+	return a.label()
+}
+
 // expired 判断活动是否已过结束时间（end_time_ms 为 0 视为无期限）。
 func (a ugActivity) expired(now time.Time) bool {
 	if a.EndMs <= 0 {
@@ -1120,10 +1186,7 @@ func claimableActivity(a ugActivity, now time.Time) bool {
 func claimUGActivity(ctx context.Context, cfg Config, headers map[string]string, a ugActivity) (UGResult, error) {
 	ctx, cancel := ugDynamicCtx(ctx)
 	defer cancel()
-	result := UGResult{Key: "activity:" + a.ID, Label: a.label()}
-	if reward := a.rewardText(); reward != "" {
-		result.Label = fmt.Sprintf("%s（%s）", a.label(), reward)
-	}
+	result := UGResult{Key: "activity:" + a.ID, Label: a.activityTitle()}
 	payload, _ := json.Marshal(map[string]string{"activity_id": a.ID})
 	status, body, errDo := postJSON(ctx, cfg.CheckinHost+EpUGActivityAction, headers, payload)
 	if errDo != nil {
@@ -1143,12 +1206,8 @@ func claimUGActivity(ctx context.Context, cfg Config, headers map[string]string,
 	// 实测 student_auth_reward 就是这种：action 回 200 `{}`，复查 activity/info
 	// 的 granted 仍是 false。这不是「已领取」，而是「还差前置动作」——把它报成
 	// 已领取会让用户以为积分到账了。
-	var envelope struct {
-		Code    *int   `json:"code"`
-		Message string `json:"message"`
-		Msg     string `json:"msg"`
-	}
-	if errJSON := json.Unmarshal(body, &envelope); errJSON != nil || envelope.Code == nil {
+	envelope, errJSON := decodeUG[ugEnvelope](body)
+	if errJSON != nil || envelope.Code == nil {
 		if len(strings.TrimSpace(string(body))) <= 2 {
 			result.Status = UGNeedsPrereq
 			result.Message = a.prereqHint()
@@ -1159,7 +1218,7 @@ func claimUGActivity(ctx context.Context, cfg Config, headers map[string]string,
 		return result, nil
 	}
 	result.Code = *envelope.Code
-	result.Message = core.FirstNonEmpty(strings.TrimSpace(envelope.Message), strings.TrimSpace(envelope.Msg))
+	result.Message = envelope.text()
 	switch {
 	case status == http.StatusOK && *envelope.Code == 0:
 		// 业务码 0 就是成功。「上游没写说明」与「说明恰好是 success」都
@@ -1236,7 +1295,7 @@ func claimUGActivities(ctx context.Context, cfg Config, headers map[string]strin
 		// 会在总览里显示成「可领取，等待本轮触发」，下一轮接着领。
 		// 门限里要预留整块裂变预算，否则触发会把时间吃到只剩几秒，
 		// 后面三次裂变请求全被 ctx 截断。
-		if !ugHasBudget(ctx, ugFissionReserve+ugClaimReserve) {
+		if !ugHasBudget(ctx, ugFissionReserve()+ugClaimReserve) {
 			break
 		}
 		result, errClaim := claimUGActivity(ctx, cfg, headers, a)
@@ -1274,10 +1333,7 @@ func worthReporting(a ugActivity, now time.Time) bool {
 
 // describeActivity 把一条活动压成总览行（不发请求）。
 func describeActivity(a ugActivity, now time.Time) UGResult {
-	result := UGResult{Key: "activity:" + a.ID, Label: a.label()}
-	if reward := a.rewardText(); reward != "" {
-		result.Label = fmt.Sprintf("%s（%s）", a.label(), reward)
-	}
+	result := UGResult{Key: "activity:" + a.ID, Label: a.activityTitle()}
 	switch {
 	// 已结束的活动在 worthReporting 就被滤掉了，这里不再重复一支死分支。
 	case a.notStarted(now):
@@ -1320,6 +1376,9 @@ const (
 // 上游没设结束时间。同族的 202608 / 202610 / 202611 / 202612 实测全部回
 // 9090「活动暂不可用」，所以不按月推算——按月猜会每个月白打一轮。
 // 上游换期时把新 ID 放进来，旧的留着无害（会回 9090 被跳过）。
+//
+// 改这里会同时改变 ugFissionReserve() 与 ugRoundTimeout()：加候选时请跑
+// TestUGRoundBudgetScalesWithFissionCandidates，确认总上限没越过宿主 3min。
 var fissionActivityCandidates = []string{"code_fission_202609"}
 
 // fissionInvitee 是邀请记录里的一条。
@@ -1357,16 +1416,11 @@ func fetchFissionStatus(ctx context.Context, cfg Config, headers map[string]stri
 			Msg:    "登录态已失效，请重新登录后再领取裂变积分",
 		}
 	}
-	var envelope struct {
-		Code    *int   `json:"code"`
-		Message string `json:"message"`
-		Msg     string `json:"msg"`
-		fissionStatus
-	}
-	if errJSON := json.Unmarshal(body, &envelope); errJSON != nil {
+	envelope, errJSON := decodeUG[fissionEnvelope](body)
+	if errJSON != nil {
 		return fissionStatus{}, false, fmt.Errorf("share_status 响应无法解析：%s", truncateBody(string(body)))
 	}
-	message := core.FirstNonEmpty(strings.TrimSpace(envelope.Message), strings.TrimSpace(envelope.Msg))
+	message := envelope.text()
 	if envelope.Code == nil {
 		// 200 但没有业务码：网关兜页、`{"data":{}}` 这类都长这样。裂变端点
 		// 一律带 code 信封，缺 code 就不算「这一期存在」，否则会把一张空壳
@@ -1482,12 +1536,8 @@ func grantFission(ctx context.Context, cfg Config, headers map[string]string, ac
 		result.Message = errDo.Error()
 		return result
 	}
-	var envelope struct {
-		Code    *int   `json:"code"`
-		Message string `json:"message"`
-		Msg     string `json:"msg"`
-	}
-	if errJSON := json.Unmarshal(body, &envelope); errJSON != nil || envelope.Code == nil {
+	envelope, errJSON := decodeUG[ugEnvelope](body)
+	if errJSON != nil || envelope.Code == nil {
 		result.Status = UGFailed
 		result.Message = truncateBody(string(body))
 		if result.Message == "" {
@@ -1496,7 +1546,7 @@ func grantFission(ctx context.Context, cfg Config, headers map[string]string, ac
 		return result
 	}
 	result.Code = *envelope.Code
-	result.Message = core.FirstNonEmpty(strings.TrimSpace(envelope.Message), strings.TrimSpace(envelope.Msg))
+	result.Message = envelope.text()
 	switch {
 	case status == http.StatusOK && *envelope.Code == 0:
 		result.Status = UGClaimed
@@ -1533,16 +1583,11 @@ func fetchFissionInviteCode(ctx context.Context, cfg Config, headers map[string]
 			Msg:    "登录态已失效，请重新登录后再生成邀请码",
 		}
 	}
-	var envelope struct {
-		Code       *int   `json:"code"`
-		Message    string `json:"message"`
-		Msg        string `json:"msg"`
-		InviteCode string `json:"invite_code"`
-	}
-	if errJSON := json.Unmarshal(body, &envelope); errJSON != nil {
+	envelope, errJSON := decodeUG[shareLinkEnvelope](body)
+	if errJSON != nil {
 		return "", fmt.Errorf("share_link 响应无法解析：%s", truncateBody(string(body)))
 	}
-	message := core.FirstNonEmpty(strings.TrimSpace(envelope.Message), strings.TrimSpace(envelope.Msg))
+	message := envelope.text()
 	if envelope.Code == nil {
 		return "", fmt.Errorf("share_link 响应不含业务码：%s", truncateBody(string(body)))
 	}

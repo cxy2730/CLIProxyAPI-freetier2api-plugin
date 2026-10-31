@@ -65,16 +65,16 @@ func TestUGActionsAreBatchable(t *testing.T) {
 	}
 	// 预算必须严格大于最坏耗时。最坏耗时按真实链路重算：
 	//   固定端点 N×perRequestTimeout + activity/info 1×ugDynamicTimeout
-	//   + 活动触发 M×ugDynamicTimeout + 裂变整块 ugFissionReserve
-	// M 不写死，用触发门限（ugFissionReserve+ugClaimReserve）从预算反推，
+	//   + 活动触发 M×ugDynamicTimeout + 裂变整块 ugFissionReserve()
+	// M 不写死，用触发门限（ugFissionReserve()+ugClaimReserve）从预算反推，
 	// 这样改超时/加端点时这里的验算会自动跟着变，不会漏改。
-	if ugFissionReserve != 3*ugDynamicTimeout {
-		t.Fatalf("ugFissionReserve = %v，裂变是 share_status/share_link/grant 三次请求，应为 3×%v",
-			ugFissionReserve, ugDynamicTimeout)
+	if ugFissionReserve() != 3*ugDynamicTimeout {
+		t.Fatalf("ugFissionReserve() = %v，裂变是 share_status/share_link/grant 三次请求，应为 3×%v",
+			ugFissionReserve(), ugDynamicTimeout)
 	}
 	fixedWorst := time.Duration(len(actions)) * perRequestTimeout
-	gate := ugFissionReserve + ugClaimReserve
-	remaining := ugRoundTimeout - fixedWorst - ugDynamicTimeout
+	gate := ugFissionReserve() + ugClaimReserve
+	remaining := ugRoundTimeout() - fixedWorst - ugDynamicTimeout
 	triggers := 0
 	for remaining >= gate {
 		triggers++
@@ -83,14 +83,14 @@ func TestUGActionsAreBatchable(t *testing.T) {
 	if triggers < 1 {
 		t.Fatalf("按门限 %v 反推触发次数为 0：活动表根本领不到东西", gate)
 	}
-	worst := fixedWorst + ugDynamicTimeout + time.Duration(triggers)*ugDynamicTimeout + ugFissionReserve
-	if ugRoundTimeout <= worst {
-		t.Fatalf("ugRoundTimeout = %v，必须大于最坏耗时 %v（固定 %v + 表 %v + 触发 %d×%v + 裂变 %v）",
-			ugRoundTimeout, worst, fixedWorst, ugDynamicTimeout, triggers, ugDynamicTimeout, ugFissionReserve)
+	worst := fixedWorst + ugDynamicTimeout + time.Duration(triggers)*ugDynamicTimeout + ugFissionReserve()
+	if ugRoundTimeout() <= worst {
+		t.Fatalf("ugRoundTimeout() = %v，必须大于最坏耗时 %v（固定 %v + 表 %v + 触发 %d×%v + 裂变 %v）",
+			ugRoundTimeout(), worst, fixedWorst, ugDynamicTimeout, triggers, ugDynamicTimeout, ugFissionReserve())
 	}
 	// 宿主上限：手动触发走 admin 的 3min 请求超时，超了等于白跑。
-	if ugRoundTimeout >= 3*time.Minute {
-		t.Fatalf("ugRoundTimeout = %v，不能达到宿主的 3min 请求上限", ugRoundTimeout)
+	if ugRoundTimeout() >= 3*time.Minute {
+		t.Fatalf("ugRoundTimeout() = %v，不能达到宿主的 3min 请求上限", ugRoundTimeout())
 	}
 	if ugClaimReserve <= ugDynamicTimeout {
 		t.Fatalf("ugClaimReserve = %v，必须大于一次动态端点超时 %v，否则会反复起必然超时的请求",
@@ -1166,14 +1166,48 @@ func TestUGRoundBudgetScalesWithFissionCandidates(t *testing.T) {
 		t.Fatal("裂变候选不能为空，否则 reserve 恒为 0")
 	}
 	want := time.Duration(len(fissionActivityCandidates)) * 3 * ugDynamicTimeout
-	if ugFissionReserve != want {
-		t.Fatalf("ugFissionReserve = %s，want %s（候选数 × 3 次 × ugDynamicTimeout）", ugFissionReserve, want)
+	if ugFissionReserve() != want {
+		t.Fatalf("ugFissionReserve() = %s，want %s（候选数 × 3 次 × ugDynamicTimeout）", ugFissionReserve(), want)
 	}
-	worst := 2*perRequestTimeout + 3*ugDynamicTimeout + ugFissionReserve
-	if ugRoundTimeout < worst {
-		t.Fatalf("ugRoundTimeout = %s 小于最坏耗时 %s", ugRoundTimeout, worst)
+	worst := 2*perRequestTimeout + 3*ugDynamicTimeout + ugFissionReserve()
+	if ugRoundTimeout() < worst {
+		t.Fatalf("ugRoundTimeout() = %s 小于最坏耗时 %s", ugRoundTimeout(), worst)
 	}
-	if ugRoundTimeout > 3*time.Minute {
-		t.Fatalf("ugRoundTimeout = %s 超过宿主 requestTimeout(3min)，会被外层截断", ugRoundTimeout)
+	if ugRoundTimeout() > 3*time.Minute {
+		t.Fatalf("ugRoundTimeout() = %s 超过宿主 requestTimeout(3min)，会被外层截断", ugRoundTimeout())
+	}
+
+	// 追加一期后预算与总上限必须立刻跟着涨——这正是改成函数的原因：
+	// 包级 var 只在初始化时算一次，之后 append 到候选表不会反映进来。
+	original := fissionActivityCandidates
+	fissionActivityCandidates = append(original[:len(original):len(original)], original[0])
+	defer func() { fissionActivityCandidates = original }()
+	if got := ugFissionReserve(); got != want+3*ugDynamicTimeout {
+		t.Fatalf("追加候选后 ugFissionReserve() = %s，want %s", got, want+3*ugDynamicTimeout)
+	}
+	if got := ugRoundTimeout(); got != worst+4*ugDynamicTimeout {
+		t.Fatalf("追加候选后 ugRoundTimeout() = %s，want %s", got, worst+4*ugDynamicTimeout)
+	}
+}
+
+// TestUGAlreadyDoesNotRepeatItself 锁住「已领取」的说明只在带新信息时才拼。
+// 固定端点的 message 本身就是「该奖励已领取」，活动总览给的是「已发放」，
+// 再拼一遍会变成「此前已领取（该奖励已领取）」；裂变的邀请进度必须保留。
+func TestUGAlreadyDoesNotRepeatItself(t *testing.T) {
+	cases := []struct {
+		name    string
+		message string
+		want    string
+	}{
+		{"固定端点重复文案", "该奖励已领取", "每日签到：此前已领取"},
+		{"总览只说已发放", "已发放", "每日签到：此前已领取"},
+		{"裂变进度必须保留", "已邀请 3 人，累计 300 积分", "每日签到：此前已领取（已邀请 3 人，累计 300 积分）"},
+		{"没有文案", "", "每日签到：此前已领取"},
+	}
+	for _, c := range cases {
+		got := UGResult{Label: "每日签到", Status: UGAlready, Message: c.message}.Describe()
+		if got != c.want {
+			t.Fatalf("%s: Describe() = %q，want %q", c.name, got, c.want)
+		}
 	}
 }
