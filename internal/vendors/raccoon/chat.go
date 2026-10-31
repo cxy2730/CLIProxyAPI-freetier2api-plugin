@@ -82,9 +82,9 @@ const grantClientPlatform = "desktop-windows"
 // grantClientVersion 是登录奖励接口使用的客户端版本（带 v 前缀）。
 //
 // 与 grantClientPlatform 保持一致：平台头声明 desktop-windows，版本就取
-// Windows 客户端的当前发布版本 1.1.3（原值 v1.0.38 对应的是 Linux 构建，
-// 与平台头不匹配）。
-const grantClientVersion = "v1.1.3"
+// Windows 客户端的当前发布版本。当前两个域取同一个发布版本，所以直接复用
+// DefaultClientVersion；日后若对话域与登录域分叉，在这里改回独立字面量。
+const grantClientVersion = DefaultClientVersion
 
 // ApplyGrantHeaders 写入登录奖励接口的客户端识别头。
 //

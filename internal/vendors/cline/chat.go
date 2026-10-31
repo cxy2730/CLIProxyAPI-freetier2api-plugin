@@ -153,11 +153,13 @@ const (
 	// RegisterPath 是用 WorkOS 令牌换 Cline 令牌的路径。
 	RegisterPath = "/auth/register"
 
-	// DefaultClientVersion 是伪装用的 Cline 客户端版本。
+	// DefaultClientVersion 是伪装用的 Cline **CLI** 版本。
 	//
-	// 2026-10-31 对齐官方最新正式版（github.com/cline/cline releases/latest
-	// = v4.1.26，原值 3.0.74 已落后两个大版本）。
-	DefaultClientVersion = "4.1.26"
+	// 只跟 CLI 发布线走，不跟 VS Code 扩展：github.com/cline/cline 的
+	// releases 页混着两条线，4.x 是扩展的版本号，CLI 仍是 3.0.74。本插件
+	// 在 X-CLIENT-TYPE / X-PLATFORM 里声明的是 cline-cli / terminal，拿扩展
+	// 版本填进去自相矛盾，反而更像伪造流量。
+	DefaultClientVersion = "3.0.74"
 	// DefaultCoreVersion 是伪装用的 Cline 内核版本。
 	DefaultCoreVersion = "0.0.66"
 )

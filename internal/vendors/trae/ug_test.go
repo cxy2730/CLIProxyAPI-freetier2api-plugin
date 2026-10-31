@@ -36,10 +36,21 @@ func ugTestConfig(t *testing.T, host string) Config {
 //
 // 兑换码需要用户提供内容，而手动触发路由只传任务族名、没有请求体入口，所以
 // 那条链路已删除——留着它只会是一个永远调不到的实现。
+//
+// cobrand/claim 与两个 share_link 需要活动 ID / 作品 ID（上游实测回
+// 4001 / 9080「param is invalid」），插件取不到，同样不进批量入口：每轮白打
+// 3 次注定失败的请求，只会拖慢整轮并把真实原因糊成「暂不可领」。
 func TestUGActionsAreBatchable(t *testing.T) {
 	actions := UGActions()
-	if len(actions) != 5 {
-		t.Fatalf("活动入口数 = %d, 期望 5", len(actions))
+	if len(actions) != 2 {
+		t.Fatalf("活动入口数 = %d, 期望 2（竞赛奖励 + 作品抽奖）", len(actions))
+	}
+	for _, excluded := range []string{EpUGCobrandClaim, EpUGWorkFissionShare, EpUGCodeFissionShare} {
+		for _, action := range actions {
+			if action.Path == excluded {
+				t.Errorf("需要入参的端点不该进批量入口: %s", excluded)
+			}
+		}
 	}
 	seen := map[string]bool{}
 	for _, action := range actions {
@@ -55,62 +66,84 @@ func TestUGActionsAreBatchable(t *testing.T) {
 
 // TestClaimUGClassifiesEachEndpoint 验证：逐个端点的归类。
 func TestClaimUGClassifiesEachEndpoint(t *testing.T) {
-	replies := map[string]struct {
+	type reply struct {
 		status int
 		body   string
+	}
+	// 批量入口只剩两个端点，所以分两轮跑：一轮覆盖「领到 / 活动关闭」，
+	// 一轮覆盖「已领取 / 缺参」。第二轮在 lottery 上借用 share_link 的
+	// 缺参码 4001，是为了把 ugParamMarkers 那条路径也走到（归类逻辑同源，
+	// 与端点无关）。
+	rounds := []struct {
+		name    string
+		replies map[string]reply
+		want    map[string]UGStatus
 	}{
-		EpUGCompetitionClaim: {200, `{"code":0,"message":"ok"}`},
-		EpUGCobrandClaim:     {200, `{"code":1001,"message":"该奖励已领取"}`},
-		EpUGWorkLotteryDraw:  {200, `{"code":2002,"message":"活动已结束"}`},
-		EpUGWorkFissionShare: {500, `{"code":5001,"message":"服务繁忙"}`},
-		// 实测 shape：share_link 缺作品 ID 时回 4001「param is invalid」。
-		EpUGCodeFissionShare: {200, `{"code":4001,"message":"param is invalid"}`},
+		{
+			name: "正常发放",
+			replies: map[string]reply{
+				EpUGCompetitionClaim: {200, `{"code":0,"message":"ok"}`},
+				EpUGWorkLotteryDraw:  {200, `{"code":2002,"message":"活动已结束"}`},
+			},
+			want: map[string]UGStatus{
+				"competition_claim": UGClaimed,
+				"work_lottery_draw": UGUnavailable,
+			},
+		},
+		{
+			name: "已领取与缺参",
+			replies: map[string]reply{
+				EpUGCompetitionClaim: {200, `{"code":1001,"message":"该奖励已领取"}`},
+				EpUGWorkLotteryDraw:  {200, `{"code":4001,"message":"param is invalid"}`},
+			},
+			want: map[string]UGStatus{
+				"competition_claim": UGAlready,
+				"work_lottery_draw": UGUnavailable,
+			},
+		},
 	}
-	stubHost(t)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("%s: method = %s, 期望 POST", r.URL.Path, r.Method)
-		}
-		if got := r.Header.Get("Authorization"); got != "Cloud-IDE-JWT test-access-token" {
-			t.Errorf("%s: Authorization = %q", r.URL.Path, got)
-		}
-		if got := r.Header.Get("X-Market-User-Id"); got == "" {
-			t.Errorf("%s: 缺少派生的 X-Market-User-Id", r.URL.Path)
-		}
-		reply, ok := replies[r.URL.Path]
-		if !ok {
-			t.Errorf("批量领取打到了未知端点 %s", r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		w.WriteHeader(reply.status)
-		_, _ = w.Write([]byte(reply.body))
-	}))
-	defer server.Close()
 
-	results, errClaim := ClaimUG(context.Background(), ugTestCredential(), ugTestConfig(t, server.URL))
-	if errClaim != nil {
-		t.Fatalf("ClaimUG 返回错误: %v", errClaim)
-	}
-	if len(results) != 5 {
-		t.Fatalf("结果数 = %d, 期望 5", len(results))
-	}
-	want := map[string]UGStatus{
-		"competition_claim":  UGClaimed,
-		"cobrand_claim":      UGAlready,
-		"work_lottery_draw":  UGUnavailable,
-		"work_fission_share": UGFailed,
-		// 缺参数属「拿不到、重试也没用」，不是上游故障。
-		"code_fission_share": UGUnavailable,
-	}
-	for _, result := range results {
-		status, known := want[result.Key]
-		if !known {
-			t.Errorf("出现预期外的入口 key: %s", result.Key)
-			continue
+	for _, round := range rounds {
+		replies := round.replies
+		stubHost(t)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				t.Errorf("%s: method = %s, 期望 POST", r.URL.Path, r.Method)
+			}
+			if got := r.Header.Get("Authorization"); got != "Cloud-IDE-JWT test-access-token" {
+				t.Errorf("%s: Authorization = %q", r.URL.Path, got)
+			}
+			if got := r.Header.Get("X-Market-User-Id"); got == "" {
+				t.Errorf("%s: 缺少派生的 X-Market-User-Id", r.URL.Path)
+			}
+			item, ok := replies[r.URL.Path]
+			if !ok {
+				t.Errorf("批量领取打到了未知端点 %s", r.URL.Path)
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(item.status)
+			_, _ = w.Write([]byte(item.body))
+		}))
+
+		results, errClaim := ClaimUG(context.Background(), ugTestCredential(), ugTestConfig(t, server.URL))
+		server.Close()
+		if errClaim != nil {
+			t.Fatalf("%s: ClaimUG 返回错误: %v", round.name, errClaim)
 		}
-		if result.Status != status {
-			t.Errorf("%s: status = %d, 期望 %d（文案 %q）", result.Key, result.Status, status, result.Message)
+		if len(results) != 2 {
+			t.Fatalf("%s: 结果数 = %d, 期望 2", round.name, len(results))
+		}
+		for _, result := range results {
+			status, known := round.want[result.Key]
+			if !known {
+				t.Errorf("%s: 出现预期外的入口 key: %s", round.name, result.Key)
+				continue
+			}
+			if result.Status != status {
+				t.Errorf("%s: %s status = %d, 期望 %d（文案 %q）",
+					round.name, result.Key, result.Status, status, result.Message)
+			}
 		}
 	}
 }
@@ -308,6 +341,13 @@ func TestClaimUGReadsNoCodeState(t *testing.T) {
 		{"资格不足-嵌套", `{"data":{"eligible":false}}`, UGUnavailable},
 		{"本次已发放", `{"eligible":true,"newly_granted":true}`, UGClaimed},
 		{"可参与但未发放", `{"eligible":true,"newly_granted":false}`, UGUnavailable},
+		// 两个字段同时出现且互相矛盾：以「本次发放成功」为准。上游真的发了
+		// 东西，却因为 eligible=false 报「不满足条件」，等于把领到的奖励吞掉。
+		{"资格不足但本次已发放", `{"eligible":false,"newly_granted":true}`, UGClaimed},
+		// 只给 newly_granted=false，没有 eligible：本次没发东西，但不是
+		// 「不满足条件」，文案不能张冠李戴。
+		{"仅本次未发放", `{"newly_granted":false}`, UGUnavailable},
+		{"本次已发放-嵌套", `{"data":{"eligible":false,"newly_granted":true}}`, UGClaimed},
 	}
 	for _, item := range cases {
 		stubHost(t)
@@ -326,6 +366,11 @@ func TestClaimUGReadsNoCodeState(t *testing.T) {
 			}
 			if strings.TrimSpace(result.Message) == "" {
 				t.Fatalf("%s: %s 必须带原因", item.name, result.Key)
+			}
+			// 这条路径上游没给业务码，Code 是零值占位；标记必须置上，
+			// 否则后续按 Code==0 统计会把这些当成「上游回 0 = 已领取」。
+			if !result.NoCode {
+				t.Fatalf("%s: %s 缺 NoCode 标记", item.name, result.Key)
 			}
 		}
 	}
@@ -352,6 +397,73 @@ func TestClaimUGClassifiesMissingParamOnNon200(t *testing.T) {
 		}
 		if result.Code != 9080 {
 			t.Errorf("%s code = %d, 期望原样带出 9080", result.Key, result.Code)
+		}
+	}
+}
+
+// TestClaimUGKeepsServerErrorsAsFailure 锁住「5xx / 429 不能被文案折成暂不可领」。
+//
+// 这是本函数原先的缺陷：非 200 分支只要文案命中「暂不可用」就归 UGUnavailable，
+// 于是一个 503（上游真的挂了）会被显示成「活动暂不可领」，调度不会重试、用户
+// 也不会，故障被静默吞掉。归类只对 4xx 成立；5xx 与 429 必须留给 Classify。
+func TestClaimUGKeepsServerErrorsAsFailure(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"503-文案像活动关闭", http.StatusServiceUnavailable, `{"code":5001,"message":"活动暂不可用"}`},
+		{"503-纯网关页", http.StatusBadGateway, `<html>502 Bad Gateway</html>`},
+		{"500-缺参文案", http.StatusInternalServerError, `{"code":9080,"message":"param is invalid"}`},
+		{"429-已领取文案", http.StatusTooManyRequests, `{"code":1001,"message":"该奖励已领取"}`},
+	}
+	for _, item := range cases {
+		stubHost(t)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(item.status)
+			_, _ = w.Write([]byte(item.body))
+		}))
+		results, errClaim := ClaimUG(context.Background(), ugTestCredential(), ugTestConfig(t, server.URL))
+		server.Close()
+		if errClaim != nil {
+			t.Fatalf("%s: 不该中止整轮: %v", item.name, errClaim)
+		}
+		if len(results) != 2 {
+			t.Fatalf("%s: 结果数 = %d, 期望 2", item.name, len(results))
+		}
+		for _, result := range results {
+			if result.Status != UGFailed {
+				t.Errorf("%s: %s status = %d, 期望 UGFailed（文案 %q）", item.name, result.Key, result.Status, result.Message)
+			}
+			if strings.TrimSpace(result.Message) == "" {
+				t.Errorf("%s: %s 失败时必须带原因", item.name, result.Key)
+			}
+		}
+	}
+}
+
+// TestClaimUGClassifiesAlreadyOnNon200 锁住「4xx 的已领取也归已领取」。
+//
+// 实测幂等端点对重复领取回 409 + 1001「该奖励已领取」。只认 UGUnavailable
+// 会让这种正常结果掉进「失败」，用户看到红字却什么都没坏。
+func TestClaimUGClassifiesAlreadyOnNon200(t *testing.T) {
+	stubHost(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"code":1001,"message":"该奖励已领取"}`))
+	}))
+	defer server.Close()
+
+	results, errClaim := ClaimUG(context.Background(), ugTestCredential(), ugTestConfig(t, server.URL))
+	if errClaim != nil {
+		t.Fatalf("409 不该中止整轮: %v", errClaim)
+	}
+	for _, result := range results {
+		if result.Status != UGAlready {
+			t.Errorf("%s status = %d, 期望 UGAlready（文案 %q）", result.Key, result.Status, result.Message)
+		}
+		if result.Code != 1001 {
+			t.Errorf("%s code = %d, 期望原样带出 1001", result.Key, result.Code)
 		}
 	}
 }
