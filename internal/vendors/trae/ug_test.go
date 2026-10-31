@@ -299,37 +299,45 @@ func TestClassifyUGMessage(t *testing.T) {
 	}
 }
 
-// TestTaskSpecsFollowRegion 验证：只有国内版声明活动福利族，且是手动族。
+// TestTaskSpecsFollowRegion 验证：只有国内版声明活动福利族，且内容与手动族语义一致。
 //
-// 不带 DefaultHours 是刻意的：这些入口只在活动期有东西可领，默认排程只会
-// 每天白打 2 次空请求。
+// 宿主把 TaskSpec 原样交给控制台渲染：Label / Description 写错，用户看到的就是
+// 错的；Route 丢了，手动触发入口整个消失（admin 跳过 Route 为空的手动族）；
+// Manual 丢了，一个「不是每天都有东西可领」的活动会被排程每天空打。
+//
+// 不带 DefaultHours 是刻意的：这些入口只在活动期有东西可领，默认排程只会每天
+// 白打 2 次空请求。
 func TestTaskSpecsFollowRegion(t *testing.T) {
-	cn := &adapter{config: ConfigFor(RegionCN)}
-	specs := cn.TaskSpecs()
-	if len(specs) != 1 || specs[0].Kind != TaskKindUG {
-		t.Fatalf("国内版任务族 = %+v, 期望只有 %s", specs, TaskKindUG)
+	specs := (&adapter{config: ConfigFor(RegionCN)}).TaskSpecs()
+	if len(specs) != 1 {
+		t.Fatalf("国内版任务族数 = %d, 期望 1", len(specs))
 	}
-	if !specs[0].Manual {
-		t.Error("活动福利必须是手动族")
-	}
-	if len(specs[0].DefaultHours) != 0 {
-		t.Errorf("手动族不应带默认排程，得到 %v", specs[0].DefaultHours)
-	}
-	if specs[0].Label == "" || specs[0].Description == "" {
-		t.Error("任务族必须带中文标签与说明")
-	}
-	// 宿主只为「Route 非空」的手动族注册管理路由；没有 Route 的手动族在控制台
-	// 根本没有触发入口，等于声明了却做不到。
-	if specs[0].Route == "" {
-		t.Error("手动族必须带 Route，否则控制台没有触发入口")
+	spec := specs[0]
+	if spec.Kind != TaskKindUG {
+		t.Errorf("Kind = %q, 期望 %q", spec.Kind, TaskKindUG)
 	}
 	if TaskKindUG != "ug" {
 		t.Errorf("族名 = %q, 期望与相邻 vendor 一致的 %q", TaskKindUG, "ug")
 	}
+	if spec.Label != "活动福利领取" {
+		t.Errorf("Label = %q（控制台原样展示）", spec.Label)
+	}
+	if spec.Description != "领取 Trae 国内版的竞赛奖励与作品抽奖" {
+		t.Errorf("Description = %q（控制台原样展示，改文案要同步这里）", spec.Description)
+	}
+	if spec.Route != "/ug/claim" {
+		t.Errorf("Route = %q, 期望 /ug/claim（缺了控制台不出现手动触发入口）", spec.Route)
+	}
+	if !spec.Manual {
+		t.Error("Manual = false，活动福利是手动族")
+	}
+	if len(spec.DefaultHours) != 0 {
+		t.Errorf("手动族不应带默认排程，得到 %v", spec.DefaultHours)
+	}
 
-	global := &adapter{config: ConfigFor(RegionGlobal)}
-	if specsGlobal := global.TaskSpecs(); len(specsGlobal) != 0 {
-		t.Errorf("国际版不应声明任务族，得到 %+v", specsGlobal)
+	// 国际版没有这套活动：返回 nil，而不是一个空族。
+	if global := (&adapter{config: ConfigFor(RegionGlobal)}).TaskSpecs(); global != nil {
+		t.Errorf("国际版任务族 = %v, 期望 nil", global)
 	}
 }
 
@@ -517,41 +525,5 @@ func TestUGDetailText(t *testing.T) {
 		if got := ugDetailText(message); got != want {
 			t.Errorf("ugDetailText(%q) = %q, 期望 %q", message, got, want)
 		}
-	}
-}
-
-// TestTaskSpecsDeclareUGForCNOnly 锁住 Trae 家族对外声明的任务族内容。
-//
-// 宿主把 TaskSpec 原样交给控制台渲染：Label / Description 写错，用户看到的
-// 就是错的；Route 丢了，手动触发入口整个消失（admin 跳过 Route 为空的手动
-// 族）；Manual 丢了，一个「不是每天都有东西可领」的活动会被排程每天空打。
-// 国际版没有这套活动，必须返回 nil 而不是一个空族。
-func TestTaskSpecsDeclareUGForCNOnly(t *testing.T) {
-	specs := (&adapter{config: ConfigFor(RegionCN)}).TaskSpecs()
-	if len(specs) != 1 {
-		t.Fatalf("国内版任务族数 = %d, 期望 1", len(specs))
-	}
-	spec := specs[0]
-	if spec.Kind != TaskKindUG {
-		t.Errorf("Kind = %q, 期望 %q", spec.Kind, TaskKindUG)
-	}
-	if spec.Label != "活动福利领取" {
-		t.Errorf("Label = %q（控制台原样展示）", spec.Label)
-	}
-	if spec.Description != "领取 Trae 国内版的竞赛奖励与作品抽奖" {
-		t.Errorf("Description = %q（控制台原样展示，改文案要同步这里）", spec.Description)
-	}
-	if spec.Route != "/ug/claim" {
-		t.Errorf("Route = %q, 期望 /ug/claim（缺了控制台不出现手动触发入口）", spec.Route)
-	}
-	if !spec.Manual {
-		t.Error("Manual = false，活动福利是手动族")
-	}
-	if len(spec.DefaultHours) != 0 {
-		t.Errorf("DefaultHours = %v, 期望空（活动不是每天都有东西可领）", spec.DefaultHours)
-	}
-
-	if global := (&adapter{config: ConfigFor(RegionGlobal)}).TaskSpecs(); global != nil {
-		t.Errorf("国际版任务族 = %v, 期望 nil（国际版没有这套活动）", global)
 	}
 }
