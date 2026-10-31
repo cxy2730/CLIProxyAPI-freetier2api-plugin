@@ -165,6 +165,13 @@ func claimCheckinCredits(ctx context.Context, cfg Config, headers map[string]str
 	return lastErr
 }
 
+// perRequestTimeout 是单个上游请求的超时，签到 / 额度 / 活动三个端点共用。
+//
+// 活动福利的一轮总预算（ugRoundTimeout）按它推算：端点数 × perRequestTimeout
+// 就是「每个端点都卡满」的耗时，总预算必须严格大于这个乘积。两边都读这一个
+// 常量，改超时只改这里，不会出现「预算按 30s 算、实际单请求 60s」这种错配。
+const perRequestTimeout = 30 * time.Second
+
 // postJSON 发一次 JSON POST 并返回状态码与响应体（读上限 1MB）。
 //
 // 签到、额度、活动三个端点用的是同一套官方客户端头、同一个超时，只是对非
@@ -181,7 +188,7 @@ func postJSON(ctx context.Context, url string, headers map[string]string, payloa
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
-	resp, errDo := hostbridge.Client(ctx, 30*time.Second).Do(req)
+	resp, errDo := hostbridge.Client(ctx, perRequestTimeout).Do(req)
 	if errDo != nil {
 		return 0, nil, fmt.Errorf("trae request failed: %w", errDo)
 	}
@@ -559,8 +566,9 @@ func ClaimUG(ctx context.Context, cred *Credential, cfg Config) ([]UGResult, err
 
 // ugRoundTimeout 是一轮活动福利领取的总上限。
 //
-// 必须严格大于「UGActions() 长度 × 单端点 30s」，否则最后一个端点在慢上游
-// 下必然拿不到结果。当前 2 个端点 → 60s，取 75s 留 15s 余量；加端点时同步上调。
+// 必须严格大于「UGActions() 长度 × perRequestTimeout」，否则最后一个端点在
+// 慢上游下必然拿不到结果。当前 2 个端点 × 30s → 60s，取 75s 留 15s 余量；
+// 加端点时同步上调（ug_test.go 用同一个常量验算，改超时不会漏改预算）。
 const ugRoundTimeout = 75 * time.Second
 
 // claimUGOne 打一个端点并归类结果。

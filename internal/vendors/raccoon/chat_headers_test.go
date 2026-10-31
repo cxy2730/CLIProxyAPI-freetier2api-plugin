@@ -35,12 +35,20 @@ func TestApplyChatHeadersAdvertisesWindowsDesktop(t *testing.T) {
 	}
 }
 
-// TestGrantHeadersMatchChatClientLine 锁住「登录奖励域与对话域同一发布版本」。
+// TestGrantHeadersUseGrantClientLine 锁住「登录奖励域读的是自己的版本常量」。
 //
-// 两个域的平台头不同（desktop-windows vs desktop-windows-x64，前者是上游
-// 要求的固定枚举），但版本必须来自同一处，否则一次升级只改一边就会出现
-// 「同一个客户端在两个端点报两个版本」。
-func TestGrantHeadersMatchChatClientLine(t *testing.T) {
+// 两个域的平台头不同（desktop-windows vs desktop-windows-x64，前者是上游要求
+// 的固定枚举），版本也**刻意各声明一份**——见 chat.go 里 grantClientVersion 的
+// 说明：两个值都没有抓包支撑，复用会把「它们本来就该一致」变成循环论证。
+//
+// 所以这里只断言登录域发出的是 grantClientVersion 的值，**不锁两域同值**：
+// 日后任一域抓到真实流量，改那一个即可，另一个不受牵连。
+//
+// 边界（如实说明）：两个常量当前取值相同，因此本条断言**无法**区分实现读的
+// 是哪一个常量——值对就通过。来源约束靠代码本身（ApplyGrantHeaders 直接引用
+// grantClientVersion），这里不假装能验证它。日后两值一旦分叉，这条断言立刻
+// 具备区分能力。
+func TestGrantHeadersUseGrantClientLine(t *testing.T) {
 	req, errNew := http.NewRequest(http.MethodPost, "https://example.test", nil)
 	if errNew != nil {
 		t.Fatalf("new request: %v", errNew)
@@ -50,16 +58,24 @@ func TestGrantHeadersMatchChatClientLine(t *testing.T) {
 	if got := req.Header.Get("X-Client-Platform"); got != grantClientPlatform {
 		t.Errorf("X-Client-Platform = %q, 期望 %q", got, grantClientPlatform)
 	}
-	if got := req.Header.Get("X-Client-Version"); got != DefaultClientVersion {
-		t.Errorf("X-Client-Version = %q, 期望 %q（两域必须同源）", got, DefaultClientVersion)
-	}
-	if grantClientVersion != DefaultClientVersion {
-		t.Errorf("grantClientVersion = %q 已与 DefaultClientVersion 分叉，确认是否有意为之",
-			grantClientVersion)
+	if got := req.Header.Get("X-Client-Version"); got != grantClientVersion {
+		t.Errorf("X-Client-Version = %q, 期望 %q（登录域读 grantClientVersion）",
+			got, grantClientVersion)
 	}
 	// 该头必须存在，即使值为空串。
 	if _, ok := req.Header["X-Org-Code"]; !ok {
 		t.Error("X-Org-Code 头缺失（上游总是发送，空值也要有）")
+	}
+}
+
+// TestGrantClientVersionIsVersioned 锁住登录域的版本形态：与 DefaultClientVersion
+// 同样必须带 v 前缀。两份常量各自受形态约束，谁改了都不会溜过去。
+func TestGrantClientVersionIsVersioned(t *testing.T) {
+	if !strings.HasPrefix(grantClientVersion, "v") {
+		t.Fatalf("grantClientVersion = %q, 期望带 v 前缀", grantClientVersion)
+	}
+	if len(strings.TrimPrefix(grantClientVersion, "v")) == 0 {
+		t.Fatalf("grantClientVersion = %q 缺版本号", grantClientVersion)
 	}
 }
 

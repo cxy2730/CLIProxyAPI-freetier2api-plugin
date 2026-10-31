@@ -59,10 +59,13 @@ func TestUGActionsAreBatchable(t *testing.T) {
 			}
 		}
 	}
-	// 预算必须严格大于「端点个数 × 单端点 30s」，否则第一个端点一旦卡满，
-	// 后面的端点剩下的预算连握手都不够。加端点忘调 ugRoundTimeout 时这里失败。
-	if budget := time.Duration(len(actions)) * 30 * time.Second; ugRoundTimeout <= budget {
-		t.Fatalf("ugRoundTimeout = %v，必须大于 端点数×30s = %v", ugRoundTimeout, budget)
+	// 预算必须严格大于「端点个数 × 单请求超时」，否则第一个端点一旦卡满，
+	// 后面的端点剩下的预算连握手都不够。单请求超时读 perRequestTimeout，
+	// 不在这里另写一个字面量——否则改了 postJSON 的超时，这条断言还在按旧
+	// 数字验收。加端点忘调 ugRoundTimeout 时这里失败。
+	if budget := time.Duration(len(actions)) * perRequestTimeout; ugRoundTimeout <= budget {
+		t.Fatalf("ugRoundTimeout = %v，必须大于 端点数×%v = %v",
+			ugRoundTimeout, perRequestTimeout, budget)
 	}
 	seen := map[string]bool{}
 	for _, action := range actions {
@@ -514,5 +517,41 @@ func TestUGDetailText(t *testing.T) {
 		if got := ugDetailText(message); got != want {
 			t.Errorf("ugDetailText(%q) = %q, 期望 %q", message, got, want)
 		}
+	}
+}
+
+// TestTaskSpecsDeclareUGForCNOnly 锁住 Trae 家族对外声明的任务族内容。
+//
+// 宿主把 TaskSpec 原样交给控制台渲染：Label / Description 写错，用户看到的
+// 就是错的；Route 丢了，手动触发入口整个消失（admin 跳过 Route 为空的手动
+// 族）；Manual 丢了，一个「不是每天都有东西可领」的活动会被排程每天空打。
+// 国际版没有这套活动，必须返回 nil 而不是一个空族。
+func TestTaskSpecsDeclareUGForCNOnly(t *testing.T) {
+	specs := (&adapter{config: ConfigFor(RegionCN)}).TaskSpecs()
+	if len(specs) != 1 {
+		t.Fatalf("国内版任务族数 = %d, 期望 1", len(specs))
+	}
+	spec := specs[0]
+	if spec.Kind != TaskKindUG {
+		t.Errorf("Kind = %q, 期望 %q", spec.Kind, TaskKindUG)
+	}
+	if spec.Label != "活动福利领取" {
+		t.Errorf("Label = %q（控制台原样展示）", spec.Label)
+	}
+	if spec.Description != "领取 Trae 国内版的竞赛奖励与作品抽奖" {
+		t.Errorf("Description = %q（控制台原样展示，改文案要同步这里）", spec.Description)
+	}
+	if spec.Route != "/ug/claim" {
+		t.Errorf("Route = %q, 期望 /ug/claim（缺了控制台不出现手动触发入口）", spec.Route)
+	}
+	if !spec.Manual {
+		t.Error("Manual = false，活动福利是手动族")
+	}
+	if len(spec.DefaultHours) != 0 {
+		t.Errorf("DefaultHours = %v, 期望空（活动不是每天都有东西可领）", spec.DefaultHours)
+	}
+
+	if global := (&adapter{config: ConfigFor(RegionGlobal)}).TaskSpecs(); global != nil {
+		t.Errorf("国际版任务族 = %v, 期望 nil（国际版没有这套活动）", global)
 	}
 }

@@ -101,8 +101,8 @@ const grantClientVersion = "v1.1.3"
 //
 // 与 ApplyClientHeaders 刻意分开：两个端点要的平台枚举不同（对话域
 // desktop-windows-x64 来自抓包，登录域必须是 desktop-windows，猜成 -x64
-// 会被拒），版本则共用同一发布线。个人账号的 X-Org-Code 为空串，但该头
-// 必须存在（上游总是发送）。
+// 会被拒），版本也各读各的常量（grantClientVersion，理由见上）。个人账号的
+// X-Org-Code 为空串，但该头必须存在（上游总是发送）。
 func ApplyGrantHeaders(req *http.Request, token, orgCode, deviceID string) {
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
