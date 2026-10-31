@@ -51,15 +51,23 @@ func (s *Service) handleTasksAuto(req pluginapi.ManagementRequest) pluginapi.Man
 	return JSONResponse(status, result)
 }
 
+// handleTasksAutoAll 启动后台一键完成，立即返回任务编号。
+//
+// 一键完成要逐个账号串行跑，账号多时会超过管理请求的超时；同步执行的话
+// 请求被取消、账号只跑了一半。改成后台任务后由页面轮询 /tasks/auto_all/status。
 func (s *Service) handleTasksAutoAll(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	// 空请求体 = 全部账号；勾选了账号时页面传 account_ids 限定范围。
 	body, errDecode := decodeRequest[accountBatchRequest](req.Body)
 	if errDecode != nil {
 		return BadJSONRequestResponse()
 	}
-	ctx, cancel := hostbridge.ManagementContext(req, requestTimeout)
-	defer cancel()
-	return JSONResponse(http.StatusOK, s.tasks.RunAutoAll(ctx, hostbridge.RequestCallbackID(req), body.AccountIDs))
+	payload, status := s.tasks.StartAutoAll(hostbridge.RequestCallbackID(req), body.AccountIDs)
+	return JSONResponse(status, payload)
+}
+
+// handleTasksAutoAllStatus 返回后台一键完成的进度与结果。
+func (s *Service) handleTasksAutoAllStatus(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+	return JSONResponse(http.StatusOK, s.tasks.AutoAllStatus())
 }
 
 func (s *Service) handleSchoolStatus(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {

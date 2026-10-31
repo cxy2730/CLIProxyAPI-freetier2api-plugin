@@ -5,6 +5,7 @@ package tasks
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 // Service 是一个 App 实例的任务引擎。
@@ -21,9 +22,42 @@ type Service struct {
 	taskLockMu sync.Mutex
 	taskLocks  map[string]*sync.Mutex
 	queue      *queueState
+	// autoAll 是「一键完成」的后台任务状态（见 autoall.go）。
+	autoAll *autoAllJob
 
 	// refreshGate 按账号串行化凭证续期（见 keepalive.go）。
 	refreshGate refreshGate
+
+	// jobMu/jobCtx/jobCancel 是后台动作（一键完成、异步任务族）的生命周期：
+	// 插件关停时会 dlclose 动态库，若还有后台 goroutine 在打宿主回调就会崩。
+	// Stop 先取消它，再给 jobWG 一个宽限期等 goroutine 自己退出。
+	jobMu     sync.Mutex
+	jobCtx    context.Context
+	jobCancel context.CancelFunc
+	jobWG     sync.WaitGroup
+}
+
+// jobStopGrace 是关停时等待后台动作收尾的宽限期。
+const jobStopGrace = 5 * time.Second
+
+// jobContext 返回后台动作应使用的上下文；后台循环未启动时退回 Background。
+func (s *Service) jobContext() context.Context {
+	s.jobMu.Lock()
+	defer s.jobMu.Unlock()
+	if s.jobCtx != nil {
+		return s.jobCtx
+	}
+	return context.Background()
+}
+
+// trackJob 在后台跑一个动作并登记到 jobWG，Stop 会等它结束。
+func (s *Service) trackJob(run func(ctx context.Context)) {
+	ctx := s.jobContext()
+	s.jobWG.Add(1)
+	go func() {
+		defer s.jobWG.Done()
+		run(ctx)
+	}()
 }
 
 // New 构造任务引擎。
@@ -34,6 +68,7 @@ func New(deps Deps) *Service {
 		pokeCh:    make(chan string, 4),
 		taskLocks: map[string]*sync.Mutex{},
 		queue:     &queueState{},
+		autoAll:   &autoAllJob{},
 	}
 }
 
@@ -49,6 +84,10 @@ func (s *Service) Start(ctx context.Context) {
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	s.schedulerCancel = cancel
+	s.jobMu.Lock()
+	jobCtx, jobCancel := context.WithCancel(context.Background())
+	s.jobCtx, s.jobCancel = jobCtx, jobCancel
+	s.jobMu.Unlock()
 	s.schedulerWG.Add(1)
 	go func() {
 		defer s.schedulerWG.Done()
@@ -56,7 +95,7 @@ func (s *Service) Start(ctx context.Context) {
 	}()
 }
 
-// Stop 停止后台调度循环并等待退出。
+// Stop 停止后台调度循环与后台动作并等待退出。
 func (s *Service) Stop() {
 	s.schedulerMu.Lock()
 	cancel := s.schedulerCancel
@@ -65,7 +104,25 @@ func (s *Service) Stop() {
 	if cancel != nil {
 		cancel()
 	}
+	s.jobMu.Lock()
+	jobCancel := s.jobCancel
+	s.jobCtx, s.jobCancel = nil, nil
+	s.jobMu.Unlock()
+	if jobCancel != nil {
+		jobCancel()
+	}
 	s.schedulerWG.Wait()
+	// 后台动作可能正卡在上游 HTTP 上，取消不会立刻生效：给一个宽限期，
+	// 超时就放手（宿主进程即将卸载插件，继续等只会拖慢关停）。
+	done := make(chan struct{})
+	go func() {
+		s.jobWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(jobStopGrace):
+	}
 }
 
 // Poke 唤醒调度循环重新计算下次执行时刻。
@@ -84,5 +141,5 @@ func (s *Service) EffectiveSettings() map[string]any { return s.effectiveSetting
 
 // RunAsync 在后台执行一个任务族。
 func (s *Service) RunAsync(kind string) {
-	go s.runScheduledTaskContext(context.Background(), kind)
+	s.trackJob(func(ctx context.Context) { s.runScheduledTaskContext(ctx, kind) })
 }

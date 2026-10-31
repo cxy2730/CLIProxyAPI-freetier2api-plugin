@@ -530,7 +530,8 @@ func TestConsolePageSettingsLabelsAndDisclaimer(t *testing.T) {
 	page := Page("/plugins/freetier2api")
 	for _, required := range []string{
 		"每日自动签到",
-		"每日自动任务",
+		// 开关只影响签到后的两个后续任务，标签必须写清范围，不能叫「每日自动任务」。
+		"签到后自动跑后续任务（开学季 / 连登奖励）",
 		"合规与免责声明",
 		"MAX_ACCOUNTS_PER_VENDOR = 10",
 	} {
@@ -538,8 +539,10 @@ func TestConsolePageSettingsLabelsAndDisclaimer(t *testing.T) {
 			t.Fatalf("console page missing %q", required)
 		}
 	}
-	if strings.Contains(page, "自动每日任务") {
-		t.Fatal("console page must replace 自动每日任务 with 每日自动任务")
+	for _, stale := range []string{"自动每日任务", "> 每日自动任务<"} {
+		if strings.Contains(page, stale) {
+			t.Fatalf("console page must not label the follow-up switch as 每日自动任务: %q", stale)
+		}
 	}
 }
 

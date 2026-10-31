@@ -39,6 +39,15 @@ func (s *Service) handleSettingsRequest(req pluginapi.ManagementRequest) plugina
 	if errTag != nil {
 		return ErrorResponse(errTag)
 	}
+	// 固定签到时刻在校验阶段就挡掉：它以前在 Mutate 内部静默忽略非法值，
+	// 用户看到 200 以为存进去了，实际没生效。
+	autoCheckinAt := strings.TrimSpace(body.AutoCheckinAt)
+	if autoCheckinAt != "" {
+		if _, _, errClock := ParseClock(autoCheckinAt); errClock != nil {
+			return ErrorResponse(core.NewPluginError("auto_checkin_at_invalid",
+				"固定签到时刻格式应为 HH:MM（24 小时制）", http.StatusBadRequest))
+		}
+	}
 	changed := map[string]any{}
 	// registryDirty 表示本次请求改变了对外模型 ID 的生效值：控制台据此立即
 	// 触发宿主配置重载（与别名/禁用同一条通道），把模型注册表重建出来。
@@ -48,11 +57,9 @@ func (s *Service) handleSettingsRequest(req pluginapi.ManagementRequest) plugina
 			current.AutoCheckin = body.AutoCheckin
 			changed["auto_checkin"] = *body.AutoCheckin
 		}
-		if at := strings.TrimSpace(body.AutoCheckinAt); at != "" {
-			if _, _, errClock := ParseClock(at); errClock == nil {
-				current.AutoCheckinAt = at
-				changed["auto_checkin_at"] = at
-			}
+		if autoCheckinAt != "" {
+			current.AutoCheckinAt = autoCheckinAt
+			changed["auto_checkin_at"] = autoCheckinAt
 		}
 		if body.AutoTasks != nil {
 			current.AutoTasks = body.AutoTasks

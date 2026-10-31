@@ -369,9 +369,28 @@ func (s *Service) deleteAuthFile(ctx context.Context, callbackID string, entry c
 	if errRemove := os.Remove(targetPath); errRemove != nil {
 		return fmt.Errorf("删除文件失败：%w", errRemove)
 	}
+	s.purgeAccountState(raw, filepath.Base(targetPath))
 	logger.Info("deleted auth file %s (vendor=%s)", filepath.Base(targetPath),
 		credentialVendorLabel(s.registry, raw, filepath.Base(targetPath)))
 	return nil
+}
+
+// purgeAccountState 清掉被删账号在 state.json 里的残留。
+//
+// 签到状态与历史按 FileID 落盘，删掉凭证后这些记录会永远挂在一个不存在的
+// 账号名下；同一个账号重新导入时还会读到上一轮的历史，看起来像「刚签过」。
+func (s *Service) purgeAccountState(raw []byte, fileName string) {
+	credential, okCredential := s.registry.ParseCredential(raw, fileName, nil)
+	if !okCredential || credential.FileID == "" {
+		return
+	}
+	fileID := credential.FileID
+	historyKey := state.CheckinHistoryKey(credential.VendorIDValue(), fileID)
+	s.deps.MutateState(func(current *state.State) {
+		delete(current.Checkin, fileID)
+		delete(current.CheckinHistory, historyKey)
+		delete(current.DailyBonusSent, historyKey)
+	})
 }
 
 // credentialVendorLabel 反查凭证真正的供应商标识，供日志使用。

@@ -116,7 +116,8 @@ func (s *Service) managementRoutes(prefix string) []pluginapi.ManagementRoute {
 		{Method: "POST", Path: prefix + "/tasks/run", Description: "执行任务队列（账号内串行、账号间并发）。"},
 		{Method: "GET", Path: prefix + "/tasks/queue", Description: "查询任务队列进度。"},
 		{Method: "POST", Path: prefix + "/tasks/auto", Description: "对单个账号执行单个任务或一键完成。"},
-		{Method: "POST", Path: prefix + "/tasks/auto_all", Description: "对全部账号依次执行一键完成任务。"},
+		{Method: "POST", Path: prefix + "/tasks/auto_all", Description: "在后台对全部账号依次执行一键完成，立即返回任务编号。"},
+		{Method: "GET", Path: prefix + "/tasks/auto_all/status", Description: "查询后台一键完成的进度与结果。"},
 		{Method: "GET", Path: prefix + "/school/status", Description: "开学季活动状态。"},
 		{Method: "POST", Path: prefix + "/keepalive", Description: "手动执行 token 保活。"},
 		{Method: "POST", Path: prefix + "/plans/preview", Description: "查询账号当前可领套餐与人机验证控件参数。"},
@@ -219,6 +220,8 @@ func (s *Service) Handle(request []byte) ([]byte, error) {
 		return core.OKEnvelope(s.handleTasksAuto(rpc))
 	case method == http.MethodPost && matchesManagementPath(rpc.Path, id.ID, "/tasks/auto_all"):
 		return core.OKEnvelope(s.handleTasksAutoAll(rpc))
+	case method == http.MethodGet && matchesManagementPath(rpc.Path, id.ID, "/tasks/auto_all/status"):
+		return core.OKEnvelope(s.handleTasksAutoAllStatus(rpc))
 	case method == http.MethodGet && matchesManagementPath(rpc.Path, id.ID, "/school/status"):
 		return core.OKEnvelope(s.handleSchoolStatus(rpc))
 

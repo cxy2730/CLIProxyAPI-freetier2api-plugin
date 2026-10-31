@@ -132,6 +132,16 @@ type CheckinProvider interface {
 	Checkin(ctx context.Context, cred *Credential) (*CheckinResult, error)
 }
 
+// DailyBeaconVendor 由「签到实际是上报每日活跃信标」的供应商实现。
+//
+// 这类签到上游按天幂等，但热力图是异步聚合的：同一天的第二个排程点读到的
+// 热力图可能还没亮，于是又上报一次，把当天计数翻倍。上游没有可查的幂等键，
+// 因此由任务层按本地记录去重（见 state.DailyBonusSent）。
+type DailyBeaconVendor interface {
+	// CheckinUsesDailyBeacon 报告当前配置下签到是否走每日活跃信标。
+	CheckinUsesDailyBeacon() bool
+}
+
 // CheckinCapability 由「能按账号判定签到」的供应商实现。
 //
 // 供应商级的 SupportsCheckin 只能表达「这个供应商/区域有没有签到活动」，

@@ -438,6 +438,9 @@ func (v *adapter) client(ctx context.Context) *Client {
 // 两个域都有每日收入路径，因此恒为 true。
 func (v *adapter) SupportsCheckin() bool { return true }
 
+// CheckinUsesDailyBeacon 报告签到是否走每日活跃信标（国际版）。
+func (v *adapter) CheckinUsesDailyBeacon() bool { return v.region.IsGlobal() }
+
 // SupportsCheckinFor 实现 core.CheckinCapability：按账号判定签到是否可用。
 func (v *adapter) SupportsCheckinFor(cred *core.Credential) bool {
 	return v.CheckinUnsupportedReason(cred) == ""

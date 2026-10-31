@@ -24,6 +24,8 @@ func TestStoreRoundTripPreservesFields(t *testing.T) {
 		s.Checkin["u1"] = CheckinRecord{LastDate: "2026-10-18", Streak: 3}
 		s.Tasks["u1\x1fchat_5"] = TaskRecord{LastStatus: "done", Credit: 10}
 	})
+	// 写盘被合并到一个短窗口里，读文件前必须显式 Flush。
+	store.Flush()
 
 	reloaded := NewStore()
 	reloaded.Configure(dir)
@@ -62,6 +64,59 @@ func TestStoreCorruptFileStartsEmpty(t *testing.T) {
 	}
 	if got.Checkin == nil || got.Tasks == nil || got.ModelAliases == nil || got.AccountAliases == nil {
 		t.Fatalf("empty state not normalized: %#v", got)
+	}
+}
+
+// 损坏的状态文件必须改名留存：它是唯一可能被手工救回的东西，
+// 就地覆盖会让下一次写盘把它彻底抹掉。
+func TestStoreCorruptFileIsQuarantined(t *testing.T) {
+	dir := t.TempDir()
+	broken := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(broken, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore()
+	store.Configure(dir)
+	if _, err := store.Load(); err != nil {
+		t.Fatalf("load corrupt: %v", err)
+	}
+	if _, errStat := os.Stat(broken); !os.IsNotExist(errStat) {
+		t.Fatalf("损坏文件仍在原处: %v", errStat)
+	}
+	matches, errGlob := filepath.Glob(filepath.Join(dir, "state.json.corrupt-*"))
+	if errGlob != nil || len(matches) != 1 {
+		t.Fatalf("隔离副本数量 = %v (%v)", matches, errGlob)
+	}
+	raw, errRead := os.ReadFile(matches[0])
+	if errRead != nil || string(raw) != "{not json" {
+		t.Fatalf("隔离副本内容被改动: %q (%v)", raw, errRead)
+	}
+}
+
+// 写盘合并：窗口内的多次 Mutate 只落一次盘，Flush 之后才可见。
+func TestMutateCoalescesWrites(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore()
+	store.Configure(dir)
+	if _, err := store.Load(); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		store.Mutate(func(s *State) { s.Tasks["k"] = TaskRecord{Credit: int64(i)} })
+	}
+	path := filepath.Join(dir, "state.json")
+	if _, errStat := os.Stat(path); !os.IsNotExist(errStat) {
+		t.Fatalf("合并窗口内不应立刻落盘: %v", errStat)
+	}
+	store.Flush()
+	if _, errStat := os.Stat(path); errStat != nil {
+		t.Fatalf("Flush 后仍无状态文件: %v", errStat)
+	}
+	// 第二次落盘前留 .bak，内容是上一份。
+	store.Mutate(func(s *State) { s.Tasks["k"] = TaskRecord{Credit: 99} })
+	store.Flush()
+	if _, errStat := os.Stat(path + ".bak"); errStat != nil {
+		t.Fatalf("缺少 .bak 备份: %v", errStat)
 	}
 }
 

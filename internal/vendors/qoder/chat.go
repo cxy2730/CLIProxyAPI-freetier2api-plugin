@@ -109,7 +109,11 @@ func RunChatCompletions(b *Bridge, payload []byte, w io.Writer) error {
 // StreamChatCompletions 执行一次流式 chat-completions，逐帧交给 emit。
 //
 // emit 收到的是裸 JSON 载荷，外层由 hostStreamSink.Emit 统一格式化为合法的 SSE 格式。
-func StreamChatCompletions(b *Bridge, payload []byte, emit func([]byte) error) error {
+// ctx 由调用方传入：客户端断开时上游请求必须跟着取消，否则生成继续跑、额度照扣。
+func StreamChatCompletions(ctx context.Context, b *Bridge, payload []byte, emit func([]byte) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	req, errDecode := decodeChatRequest(payload)
 	if errDecode != nil {
 		return errDecode
@@ -120,7 +124,13 @@ func StreamChatCompletions(b *Bridge, payload []byte, emit func([]byte) error) e
 
 	var hasToolCalls bool
 	var inputTokens, outputTokens int
-	errCall := b.CallQoder(context.Background(), InferAgent(req.Model), messages, req.Model, req.Tools, func(d Delta) {
+	// emitErr 记下客户端侧写失败：SSE 一旦写不出去（浏览器断开、上游连接
+	// 被掐），继续生成只会白烧额度，必须停下来并把错误交给调用方。
+	var emitErr error
+	errCall := b.CallQoder(ctx, InferAgent(req.Model), messages, req.Model, req.Tools, func(d Delta) {
+		if emitErr != nil {
+			return
+		}
 		if d.InputTokens > 0 || d.OutputTokens > 0 {
 			inputTokens, outputTokens = d.InputTokens, d.OutputTokens
 		}
@@ -148,8 +158,13 @@ func StreamChatCompletions(b *Bridge, payload []byte, emit func([]byte) error) e
 		if errMarshal != nil {
 			return
 		}
-		_ = emit(encoded)
+		if errEmit := emit(encoded); errEmit != nil {
+			emitErr = errEmit
+		}
 	})
+	if emitErr != nil {
+		return emitErr
+	}
 	if errCall != nil {
 		return errCall
 	}

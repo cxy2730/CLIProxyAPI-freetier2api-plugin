@@ -30,7 +30,7 @@ var authFileDirs = []string{"/root/.cli-proxy-api", "."}
 // 回调不可用时才直接写盘（与凭证续期写盘兜底同一个理由）。两条都失败才算失败——
 // 调用方必须能把「没保存成功」如实告诉用户，不能出现页面显示成功而磁盘上什么都没有。
 func saveAuthFile(callbackID, fileName string, raw []byte) error {
-	name := strings.TrimSpace(fileName)
+	name := sanitizeAuthFileName(fileName)
 	if name == "" || len(raw) == 0 {
 		return fmt.Errorf("凭证缺少文件名或内容")
 	}
@@ -54,6 +54,38 @@ func saveAuthFile(callbackID, fileName string, raw []byte) error {
 		}
 	}
 	return fmt.Errorf("host.auth.save 不可用且落盘失败（%s）", name)
+}
+
+// sanitizeAuthFileName 把供应商给的凭证文件名收敛成一个安全的基名。
+//
+// 文件名一路从上游响应（登录流程）/账号昵称传到这里，早先是直接
+// filepath.Join(dir, name) 落盘：带 `/` 或 `..` 的取值会把凭证写到目录外，
+// 绝对路径更会直接忽略 dir。这里只保留基名、去掉控制字符与路径分隔符，
+// 扩展名统一 .json；收敛后为空则拒绝写入。
+func sanitizeAuthFileName(fileName string) string {
+	name := strings.TrimSpace(fileName)
+	if name == "" {
+		return ""
+	}
+	// filepath.Base 在 Linux 上不认反斜杠，所以下面还要再替换一次。
+	name = filepath.Base(name)
+	name = strings.Map(func(r rune) rune {
+		switch {
+		case r < 0x20, r == 0x7f:
+			return -1
+		case r == '/', r == '\\', r == ':', r == '*', r == '?', r == '"', r == '<', r == '>', r == '|':
+			return '_'
+		}
+		return r
+	}, name)
+	name = strings.Trim(name, ". ")
+	if name == "" || name == "." || name == ".." {
+		return ""
+	}
+	if !strings.EqualFold(filepath.Ext(name), ".json") {
+		name += ".json"
+	}
+	return name
 }
 
 // safeAuthFilePath 校验一个凭证文件是否归本插件所有且可安全改写/删除，

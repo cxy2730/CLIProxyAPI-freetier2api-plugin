@@ -480,7 +480,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
         <label>执行时间 <input type="text" id="setCheckinAt" placeholder="10:00" style="width:80px" title="按整点排程：分钟不为 0 时顺延到下一整点，不会早于该时刻执行"></label>
       </div>
       <div class="row" style="margin-top:8px">
-        <label><input type="checkbox" id="setAutoTasks"> 每日自动任务</label>
+        <label title="开关只影响签到后自动执行的后续任务：开学季、连登奖励。其它成长任务不随签到自动跑，需在任务页手动执行。"><input type="checkbox" id="setAutoTasks"> 签到后自动跑后续任务（开学季 / 连登奖励）</label>
       </div>
       <div class="row" style="margin-top:8px">
         <label>提示词防御模式
@@ -1324,8 +1324,10 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       var labels = {};
       (settings.task_specs || []).forEach(function (spec) { labels[spec.kind] = spec.label || spec.kind; });
       var nextTasks = (scheduler.next_tasks || []).map(function (kind) { return labels[kind] || kind; });
+      // 后端给的是已经排好的可读时刻（HH:MM，跨天补日期），页面不再拼 RFC3339。
       document.getElementById("scheduleInfo").textContent =
-        "下次执行：" + (scheduler.next_at || "-") + " · 任务：" + (nextTasks.join("、") || "无");
+        "下次执行：" + (scheduler.next_hhmm || scheduler.next_at || "-") +
+        " · 任务：" + (nextTasks.join("、") || "无");
       // 自愈：上次变更后重载没跑成功（页面被关掉、宿主当时不可用），这里补一次。
       // 重载成功后插件会清除该标记；每次页面生命周期只补一次，避免宿主不支持
       // 自动重载时反复写配置。
@@ -2997,8 +2999,8 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
 
   // 勾选的账号（未勾选时为全部）依次一键完成。
   //
-  // 这是耗时操作（含真实对话），因此先让用户确认；请求期间按钮禁用，
-  // 避免重复触发（后端也有账号级互斥，但界面上的反馈更直接）。
+  // 这是耗时操作（含真实对话），后端已经改成后台任务：POST 只负责启动并
+  // 返回任务编号，页面按 3 秒轮询进度，跑完再一次性汇报结果。
   document.getElementById("btnAutoAll").addEventListener("click", function () {
     var ids = selectedAccountIDs();
     var scope = ids.length ? ids.length + " 个选中账号" : "全部账号";
@@ -3009,23 +3011,50 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     }
     var btn = this;
     btn.disabled = true;
-    banner("ok", "已开始逐账号执行一键完成，请勿关闭页面…", 0);
-    api("POST", "/tasks/auto_all", { account_ids: ids }).then(function (data) {
-      if (!data) return;
-      var lines = [];
-      ((data && data.results) || []).forEach(function (entry) {
-        if (entry.skipped) { lines.push((entry.label || "") + "：" + entry.skipped); return; }
-        var results = entry.results || [];
-        var done = results.filter(function (r) { return r.status === "done"; }).length;
-        var errs = results.filter(function (r) { return r.status === "error"; }).length;
-        lines.push((entry.label || "") + "：完成 " + done + (errs ? "，失败 " + errs : ""));
-      });
-      banner("ok", "全部账号执行完毕 —— " + (lines.join("；") || "无结果"), 5000);
-      loadStatus(true);
+    banner("ok", "已在后台开始逐账号执行一键完成…", 0);
+    api("POST", "/tasks/auto_all", { account_ids: ids }).then(function () {
+      pollAutoAll(btn);
     }).catch(function (err) {
+      // 409 = 已有一个后台任务在跑：不当成失败，直接接着轮询它。
+      if (String((err && err.message) || "").indexOf("正在执行中") >= 0) {
+        pollAutoAll(btn);
+        return;
+      }
+      btn.disabled = false;
       banner("err", "执行失败：" + err.message, 8000);
-    }).then(function () { btn.disabled = false; });
+    });
   });
+
+  // pollAutoAll 轮询后台一键完成的进度，跑完汇报并解锁按钮。
+  function pollAutoAll(btn) {
+    var timer = setInterval(function () {
+      api("GET", "/tasks/auto_all/status").then(function (data) {
+        if (!data) return;
+        if (data.running) {
+          var progress = data.total ? "（" + data.progress + "/" + data.total + "）" : "";
+          banner("ok", "正在逐账号执行一键完成" + progress + "，关闭页面不影响执行…", 0);
+          return;
+        }
+        clearInterval(timer);
+        btn.disabled = false;
+        var result = data.result || {};
+        var lines = [];
+        ((result && result.results) || []).forEach(function (entry) {
+          if (entry.skipped) { lines.push((entry.label || "") + "：" + entry.skipped); return; }
+          var results = entry.results || [];
+          var done = results.filter(function (r) { return r.status === "done"; }).length;
+          var errs = results.filter(function (r) { return r.status === "error"; }).length;
+          lines.push((entry.label || "") + "：完成 " + done + (errs ? "，失败 " + errs : ""));
+        });
+        banner("ok", "全部账号执行完毕 —— " + (lines.join("；") || result.message || "无结果"), 5000);
+        loadStatus(true);
+      }).catch(function (err) {
+        clearInterval(timer);
+        btn.disabled = false;
+        banner("err", "读取执行进度失败：" + err.message, 8000);
+      });
+    }, 3000);
+  }
 
   document.getElementById("btnCheckin").addEventListener("click", function () {
     var btn = this;
