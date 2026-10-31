@@ -196,13 +196,14 @@ func (v *adapter) fetchQuota(ctx context.Context, cred *Credential) (*pluginapi.
 			if effectiveAt > 0 {
 				note = "套餐已领取，额度 " + time.Unix(effectiveAt, 0).UTC().Format(time.RFC3339) + " 生效"
 			}
-		} else if len(grantCandidatePlans(snapshot.plans, snapshot.serverTime)) > 0 {
-			// 有套餐但没有可解析的授予明细：领了，桶还没生成。这里不按 status
-			// 过滤——pending 也可能是「已领取未生效」，说成「尚未领取」会误导。
-			note = "套餐已领取，额度桶尚未生效"
-		} else if len(snapshot.plans) > 0 {
-			// 套餐全都过期了：说成「尚未生效」同样是错的。
+		} else if plansEnded(snapshot.plans, snapshot.serverTime) {
+			// 只有「每个套餐的 ends_at 都已过去」才能说过期：授予为 0 且授予
+			// 时刻在未来的 pending 套餐同样没有可展示的授予，说成过期是错的。
 			note = "套餐已过期，无可用额度"
+		} else if len(snapshot.plans) > 0 {
+			// 领了但还没有可展示的授予（桶未生成 / 授予为 0 且生效在未来）：
+			// 说成「尚未领取」同样误导。
+			note = "套餐已领取，额度桶尚未生效"
 		}
 		response.Summary = append(response.Summary, pluginapi.QuotaMetric{
 			Key: "status", Label: "账号状态", Value: 1, Unit: note,
@@ -582,7 +583,8 @@ type planSnapshot struct {
 	metrics []pluginapi.QuotaMetric
 	// groups 是 balance 换算出的窗口组（宿主卡片渲染进度条与到期时间）。
 	groups []pluginapi.QuotaGroup
-	// errPreview 是 preview 请求的失败原因（balance 失败时 held 为空）。
+	// errPreview 是投放查询的失败原因（preview 优先，其次 marketing）；
+	// 非空表示「查到什么」这件事本身失败了，不能当成「没有可领套餐」。
 	errPreview error
 	// errBalance 是 balance 请求的失败原因；非空时额度结果不完整。
 	errBalance error
@@ -784,6 +786,22 @@ func grantCandidatePlans(plans []map[string]any, serverTime int64) []grantCandid
 		}
 	}
 	return out
+}
+
+// plansEnded 报告所有套餐都已按服务端时间到期。
+//
+// 没有 ends_at 或服务端时间未知时一律返回 false：宁可说「额度桶尚未生效」，
+// 也不要把「不知道」说成「过期」。
+func plansEnded(plans []map[string]any, serverTime int64) bool {
+	if len(plans) == 0 || serverTime <= 0 {
+		return false
+	}
+	for _, plan := range plans {
+		if endsAt := core.GetUnixSeconds(plan, "ends_at"); endsAt <= 0 || endsAt > serverTime {
+			return false
+		}
+	}
+	return true
 }
 
 // pendingEffectiveAt 返回套餐里最早一个「尚未生效」的 token 授予时刻（Unix 秒）；

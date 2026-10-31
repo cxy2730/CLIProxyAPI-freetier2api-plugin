@@ -251,6 +251,40 @@ func TestResolveOffersKeepsErrorWhenNothingFound(t *testing.T) {
 	}
 }
 
+// TestResolveOffersPrefersPreviewError 锁住双通道都失败时的错误取舍：
+// preview 是主通道，它的失败原因更能解释「为什么没有可领套餐」。
+func TestResolveOffersPrefersPreviewError(t *testing.T) {
+	previewErr := core.NewPluginError("zcode_preview_http", "preview 502", 502)
+	marketingErr := core.NewPluginError("zcode_activity_http", "marketing 504", 504)
+	_, errResolve := resolveOffers(nil, previewErr, nil, marketingErr)
+	if errResolve != previewErr {
+		t.Fatalf("双通道失败时应上报 preview 错误: %v", errResolve)
+	}
+}
+
+// TestPlansEndedRequiresEveryEndsAt 锁住「过期」只能按 ends_at 判：
+// 没有到期信息、或任一套餐仍在有效期内，都不能说成过期。
+func TestPlansEndedRequiresEveryEndsAt(t *testing.T) {
+	cases := []struct {
+		name   string
+		plans  []map[string]any
+		now    int64
+		expect bool
+	}{
+		{"空列表", nil, 100, false},
+		{"服务端时间未知", []map[string]any{{"ends_at": float64(10)}}, 0, false},
+		{"缺 ends_at", []map[string]any{{"status": "pending"}}, 100, false},
+		{"仍在有效期", []map[string]any{{"ends_at": float64(200)}}, 100, false},
+		{"混合：一个已过期", []map[string]any{{"ends_at": float64(10)}, {"ends_at": float64(200)}}, 100, false},
+		{"全部过期", []map[string]any{{"ends_at": float64(10)}, {"ends_at": float64(20)}}, 100, true},
+	}
+	for _, c := range cases {
+		if got := plansEnded(c.plans, c.now); got != c.expect {
+			t.Fatalf("%s: plansEnded = %v, want %v", c.name, got, c.expect)
+		}
+	}
+}
+
 // TestPlanGrantQuotaDedupesByEntitlementID 锁住「同模型同额度但确属两份授予」
 // 不会被折叠成一份。
 func TestPlanGrantQuotaDedupesByEntitlementID(t *testing.T) {
