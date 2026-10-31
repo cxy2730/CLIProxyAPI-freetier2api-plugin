@@ -113,27 +113,84 @@ func checkin(ctx context.Context, cred *Credential, benefitState *benefitCheckin
 	credit, errCredit := checkinCreditActivity(ctx, cred)
 	benefit, errBenefit := benefitState.claimAvailable(ctx, cred)
 	if errCredit != nil && errBenefit != nil {
-		return nil, fmt.Errorf("积分签到失败: %w；福利 Token 领取失败: %w", errCredit, errBenefit)
+		return nil, newCheckinFailure("", []checkinCause{
+			{"积分签到失败", errCredit},
+			{"福利 Token 领取失败", errBenefit},
+		})
 	}
 	if errCredit != nil {
 		if benefit != nil {
-			return nil, fmt.Errorf("%s；积分签到失败: %w", benefit.Message, errCredit)
+			return nil, newCheckinFailure(benefit.Message, []checkinCause{{"积分签到失败", errCredit}})
 		}
 		return nil, errCredit
 	}
 	if errBenefit != nil {
-		return nil, fmt.Errorf("%s；福利 Token 领取失败: %w", credit.Message, errBenefit)
+		return nil, newCheckinFailure(credit.Message, []checkinCause{{"福利 Token 领取失败", errBenefit}})
 	}
 	if benefit == nil {
 		credit.Message += "；免费福利通道未开放，本次仅处理积分签到"
 		return credit, nil
 	}
+	return mergeCheckin(credit, benefit), nil
+}
+
+// mergeCheckin 合并两条链路的结果。
+//
+// Already 表示「本次什么都没新增」：福利侧今日已领、且积分侧也没有新增
+// （已签到或本就无活动）才算；只要任一侧真的领到了东西，就不能记成 already。
+func mergeCheckin(credit, benefit *CheckinResult) *CheckinResult {
 	return &CheckinResult{
-		Already:     credit.Already && benefit.Already,
-		Credit:      credit.Credit,
-		Message:     credit.Message + "；" + benefit.Message,
-		NotRecorded: credit.NotRecorded && benefit.NotRecorded,
-	}, nil
+		Already: benefit.Already && (credit.Already || credit.NotRecorded),
+		Credit:  credit.Credit,
+		Message: credit.Message + "；" + benefit.Message,
+	}
+}
+
+// checkinCause 是「哪个步骤失败了」与原始错误的组合。
+type checkinCause struct {
+	label string
+	err   error
+}
+
+// checkinFailure 是签到错误：消息给人看，causes 给 errors.As/Is 用。
+//
+// core.Failure.Error() 带 "upstream model_blocked [0]:" 这类内部分类前缀，直接
+// 进签到横幅只会让人困惑；而宿主的 401 保活重试要靠 errors.As 找到原始
+// *core.Failure，所以消息与错误链必须分开保存。
+type checkinFailure struct {
+	message string
+	causes  []error
+}
+
+func (e *checkinFailure) Error() string { return e.message }
+
+// Unwrap 返回全部失败原因（Go 1.20 的多错误协议），两条链路任一 401 都能被识别。
+func (e *checkinFailure) Unwrap() []error { return e.causes }
+
+// newCheckinFailure 组装一次签到的失败信息；progress 是本轮已完成的进展。
+func newCheckinFailure(progress string, causes []checkinCause) error {
+	parts := make([]string, 0, len(causes))
+	errs := make([]error, 0, len(causes))
+	for _, cause := range causes {
+		parts = append(parts, cause.label+": "+describeFailure(cause.err))
+		errs = append(errs, cause.err)
+	}
+	message := strings.Join(parts, "；")
+	if progress != "" {
+		message = progress + "；" + message
+	}
+	return &checkinFailure{message: message, causes: errs}
+}
+
+// describeFailure 取用户可读原因：上游原文优先，其次原始错误文本。
+func describeFailure(err error) string {
+	var failure *core.Failure
+	if errors.As(err, &failure) {
+		if msg := strings.TrimSpace(failure.Msg); msg != "" {
+			return msg
+		}
+	}
+	return err.Error()
 }
 
 // checkinCreditActivity 只处理积分签到，不决定是否领取免费模型福利。

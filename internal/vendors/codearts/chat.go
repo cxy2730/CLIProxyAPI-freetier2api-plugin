@@ -115,18 +115,23 @@ func doCodeArtsRequest(ctx context.Context, baseURL string, req ChatRequest) (*h
 	}
 	httpReq.Header.Set("Agent-Type", "PromptCenter")
 	httpReq.Header.Set("User-Agent", "CodeArtsAgent/5.2.0")
-	// 上游要求模型头与请求体严格一致，签名必须覆盖两者。
-	var model struct {
-		Model string `json:"model"`
-	}
-	if json.Unmarshal(req.Body, &model) == nil && model.Model != "" {
-		httpReq.Header.Set("Model-Id", model.Model)
-		httpReq.Header.Set("Model-Name", model.Model)
-	}
 	if req.Benefit {
 		// 必须放在签名之前：签名覆盖该头，晚设就不生效，
 		// 请求会被判成积分通道并按积分计费。
 		httpReq.Header.Set(HeaderMaasType, MaasBenefit)
+	} else {
+		// 积分通道要求模型头与请求体严格一致，且签名覆盖两者。
+		//
+		// 只给积分通道加：它是新开的显式开关，作者已用真实账号验证；福利
+		// 通道是既有用户的默认路径，多两个签名头属于行为变更，没有实盘证据
+		// 就不能顺手改。
+		var model struct {
+			Model string `json:"model"`
+		}
+		if json.Unmarshal(req.Body, &model) == nil && model.Model != "" {
+			httpReq.Header.Set("Model-Id", model.Model)
+			httpReq.Header.Set("Model-Name", model.Model)
+		}
 	}
 
 	// 签名

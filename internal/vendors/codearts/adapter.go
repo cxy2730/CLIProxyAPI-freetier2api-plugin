@@ -18,7 +18,12 @@ import (
 type adapter struct {
 	*core.NativeAdapter[*Credential]
 	creditEnabled atomic.Bool
-	benefitClaims sync.Map // 账号 FileID → *benefitCheckinState，实例内隔离。
+	// benefitClaims 是「账号 → 今日福利领取状态」，实例内隔离。
+	//
+	// 条目与用过的账号一一对应（有界，平台侧限制每供应商账号数），账号删除后
+	// 残留的只是几十字节的日期，不值得为它引入淘汰器 + 与正在领取的协程竞争
+	// 删除时机；重启后条目清空，由上游幂等接口如实返回结果。
+	benefitClaims sync.Map
 
 	// credits 缓存最近一轮目录探测的倍率表（官方模型 ID → 展示文案）。
 	credits core.CreditTable

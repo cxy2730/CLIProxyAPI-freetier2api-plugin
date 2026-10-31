@@ -92,9 +92,14 @@ func TestCodeArtsCreditChannelRequiresExplicitOptIn(t *testing.T) {
 				if strings.Contains(headers.Get("Authorization"), "maas_type") != wantBenefit {
 					t.Fatal("channel header/signature mismatch")
 				}
+				// 模型头属于积分通道：福利通道是既有默认路径，不加没有实盘证据的头。
 				for _, key := range []string{"Model-Id", "Model-Name"} {
-					if headers.Get(key) != req.Model {
-						t.Fatalf("%s must match request model: %q", key, headers.Get(key))
+					want := req.Model
+					if wantBenefit {
+						want = ""
+					}
+					if headers.Get(key) != want {
+						t.Fatalf("%s = %q, want %q (benefit=%v)", key, headers.Get(key), want, wantBenefit)
 					}
 				}
 			})

@@ -3,6 +3,7 @@ package codearts
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"freetier2api-plugin/internal/core"
 	"freetier2api-plugin/internal/hostbridge"
 )
 
@@ -178,6 +180,83 @@ func TestCheckinClaimsBenefitsIndependentlyOfCredits(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestMergeCheckinAlreadySemantics 锁住「已领」的合并口径：
+// Already 只在两条链路本次都没有新增时为真。
+func TestMergeCheckinAlreadySemantics(t *testing.T) {
+	cases := []struct {
+		name    string
+		credit  *CheckinResult
+		benefit *CheckinResult
+		want    bool
+		wantMsg string
+	}{
+		{
+			name:   "积分无活动 + 福利今日已领",
+			credit: &CheckinResult{Message: "未找到每日签到活动", NotRecorded: true},
+			// 本轮什么都没领到：记 success 会让历史看起来签到成功而权益没到账。
+			benefit: &CheckinResult{Already: true, Message: "今日免费福利 Token 已领取"},
+			want:    true, wantMsg: "未找到每日签到活动；今日免费福利 Token 已领取",
+		},
+		{
+			name:    "积分已签到 + 福利今日已领",
+			credit:  &CheckinResult{Already: true, Message: "今天已领取"},
+			benefit: &CheckinResult{Already: true, Message: "今日免费福利 Token 已领取"},
+			want:    true,
+		},
+		{
+			name:    "积分刚领到 + 福利今日已领",
+			credit:  &CheckinResult{Credit: 100, Message: "领取 100 积分"},
+			benefit: &CheckinResult{Already: true, Message: "今日免费福利 Token 已领取"},
+			want:    false,
+		},
+		{
+			name:    "两边都刚领到",
+			credit:  &CheckinResult{Credit: 100, Message: "领取 100 积分"},
+			benefit: &CheckinResult{Message: "已领取当日免费福利 Token"},
+			want:    false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := mergeCheckin(c.credit, c.benefit)
+			if got.Already != c.want {
+				t.Fatalf("Already = %v, want %v (%+v)", got.Already, c.want, got)
+			}
+			if got.NotRecorded {
+				t.Fatal("福利侧返回结果即表示本轮有记录，NotRecorded 不应为真")
+			}
+			if c.wantMsg != "" && got.Message != c.wantMsg {
+				t.Fatalf("Message = %q, want %q", got.Message, c.wantMsg)
+			}
+		})
+	}
+}
+
+// TestCheckinFailureKeepsChainAndReadableMessage 锁住失败信息的两面性：
+// 横幅只显示上游原文（不带 "upstream model_blocked [0]:" 这种内部分类前缀），
+// 而 hosts 的 401 保活重试仍能通过 errors.As 拿到原始 *core.Failure。
+func TestCheckinFailureKeepsChainAndReadableMessage(t *testing.T) {
+	expired := &core.Failure{Kind: core.FailureKindCredential, Status: http.StatusUnauthorized, Msg: "APIG.0602 the security token has expired"}
+	errJoin := newCheckinFailure("今天已领取", []checkinCause{
+		{"积分签到失败", expired},
+		{"福利 Token 领取失败", fmt.Errorf("claim benefit 4006: 今日福利名额已用完")},
+	})
+
+	message := errJoin.Error()
+	if strings.Contains(message, "upstream ") {
+		t.Fatalf("横幅不应出现内部分类前缀: %q", message)
+	}
+	for _, want := range []string{"今天已领取", "积分签到失败", "APIG.0602", "今日福利名额已用完"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("message %q missing %q", message, want)
+		}
+	}
+	var failure *core.Failure
+	if !errors.As(errJoin, &failure) || failure != expired {
+		t.Fatalf("401 必须仍可被 errors.As 找到（保活重试依赖它）: %v", errJoin)
 	}
 }
 

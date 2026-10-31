@@ -80,6 +80,13 @@ func TestChatRequestSendsBenefitChannelHeader(t *testing.T) {
 	if signed := (*captured).Header.Get("Authorization"); !strings.Contains(signed, "maas_type") {
 		t.Fatalf("Authorization 未覆盖 %s: %s", HeaderMaasType, signed)
 	}
+	// 福利通道是既有用户的默认路径：积分通道新增的模型头不能顺手加到这里，
+	// 否则等于在没有实盘证据的情况下改动所有默认请求。
+	for _, key := range []string{"Model-Id", "Model-Name"} {
+		if got := (*captured).Header.Get(key); got != "" {
+			t.Fatalf("福利通道不应带 %s，实际 %q", key, got)
+		}
+	}
 }
 
 // TestChatRequestWithoutBenefitChannel 守住反向：显式走积分通道时不带这个头。
@@ -95,6 +102,18 @@ func TestChatRequestWithoutBenefitChannel(t *testing.T) {
 	}
 	if *captured != nil && (*captured).Header.Get(HeaderMaasType) != "" {
 		t.Fatalf("积分通道不应带 %s，实际 %q", HeaderMaasType, (*captured).Header.Get(HeaderMaasType))
+	}
+	// 积分通道要求模型头与请求体一致，且签名必须覆盖（见 Authorization）。
+	if *captured == nil {
+		t.Fatal("没有截到请求")
+	}
+	for _, key := range []string{"Model-Id", "Model-Name"} {
+		if got := (*captured).Header.Get(key); got != "glm-5.2" {
+			t.Fatalf("积分通道 %s = %q, want glm-5.2", key, got)
+		}
+	}
+	if signed := (*captured).Header.Get("Authorization"); !strings.Contains(signed, "model-id") {
+		t.Fatalf("Authorization 未覆盖 Model-Id: %s", signed)
 	}
 }
 
