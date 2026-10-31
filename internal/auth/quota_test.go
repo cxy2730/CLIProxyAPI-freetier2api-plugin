@@ -54,12 +54,36 @@ func TestTotalsRecognizesEveryVendorKeyFamily(t *testing.T) {
 			want: QuotaTotals{Remaining: 80, Total: 100},
 		},
 		{
-			name: "合法零额度不被后续额度族覆盖",
+			name: "org_package_* 族（Qoder 组织资源包）",
+			summary: []pluginapi.QuotaMetric{
+				{Key: "org_package_remaining", Value: 2000},
+				{Key: "org_package_total", Value: 2000},
+				{Key: "org_package_used", Value: 0},
+			},
+			want: QuotaTotals{Remaining: 2000, Total: 2000},
+		},
+		{
+			// issue #70：国内版团队账号的套餐席位用尽（0/3000），组织资源包
+			// 还有 2000。按「出现顺序」或「total>0 就算有容量」都会锁死在
+			// 0/3000，账号于是被当成没额度。
+			name: "套餐额度用尽时让位给仍有余量的组织资源包（Qoder CN #70）",
 			summary: []pluginapi.QuotaMetric{
 				{Key: "user_quota_remaining", Value: 0},
-				{Key: "addon_quota_remaining", Value: 50},
+				{Key: "user_quota_total", Value: 3000},
+				{Key: "user_quota_used", Value: 3000},
+				{Key: "org_package_remaining", Value: 2000},
+				{Key: "org_package_total", Value: 2000},
+				{Key: "org_package_used", Value: 0},
+			},
+			want: QuotaTotals{Remaining: 2000, Total: 2000},
+		},
+		{
+			// 显式 0 是真实值而非缺失：只有一个族时报 0/100 就展示 0/100，
+			// 既不退化成 0/0，也不从 used 反推。
+			name: "唯一的族显式报 0/100 时如实展示",
+			summary: []pluginapi.QuotaMetric{
+				{Key: "user_quota_remaining", Value: 0},
 				{Key: "user_quota_total", Value: 100},
-				{Key: "addon_quota_total", Value: 200},
 			},
 			want: QuotaTotals{Remaining: 0, Total: 100},
 		},

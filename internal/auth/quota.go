@@ -55,11 +55,11 @@ type QuotaTotals struct {
 // **新增供应商必须复用其中一族**：这个函数只认白名单，写别的键名会静默
 // 得到 0/0，页面就会一直显示 0 / 0（Trae 曾用 remaining_credit 踩过）。
 //
-// 一个账号可能同时给出多个族（Qoder 的套餐额度 user_quota_* 与拓展包
-// addon_quota_*）。优先级按**是否真有容量**而不是出现顺序：Qoder Free 计划的
-// userQuota 是合法的 `{used:0,total:0,remaining:0}`，按出现顺序取会把整个
-// 账号锁死在 0/0，即使拓展包里还有额度。只有所有族都没有容量时才回落到
-// 第一个出现的族——那时 0/0 是真实语义（额度已用尽 / 未开通）。
+// 一个账号可能同时给出多个族（Qoder 的套餐额度 user_quota_*、加购额度
+// addon_quota_* 与组织资源包 org_package_*）。优先级按**是否真有容量**而不是
+// 出现顺序：套餐额度用尽（0/3000）时，还有余额的资源包必须接管显示，
+// 否则账号表会一直停在 0/3000。只有所有族都没有容量时才回落到第一个出现的
+// 族——那时 0/0 或 0/total 是真实语义（额度已用尽 / 未开通）。
 func Totals(response *pluginapi.QuotaFetchResponse) QuotaTotals {
 	if response == nil {
 		return QuotaTotals{}
@@ -115,9 +115,18 @@ type quotaFamily struct {
 	hasRemaining, hasTotal bool
 }
 
-// hasCapacity 报告该族是否有真实额度（任一维度为正）。
+// hasCapacity 报告该族现在还有可用额度。
+//
+// remaining 是「还能不能用」的直接判据：显式 remaining=0 的族已经耗尽，
+// 即使 total>0 也不该挡住另一个还有余额的族——Qoder 套餐额度用尽、组织
+// 资源包仍有余额时，账号表必须显示后者，否则用户看到的是 0/3000，而实际
+// 还能继续用资源包。只报 total、不报 remaining 的供应商没有这个信号，
+// 退回按 total 判断。
 func (f quotaFamily) hasCapacity() bool {
-	return (f.hasRemaining && f.remaining > 0) || (f.hasTotal && f.total > 0)
+	if f.hasRemaining {
+		return f.remaining > 0
+	}
+	return f.hasTotal && f.total > 0
 }
 
 // quotaKeyRoles 是额度键的唯一词表：键 → (族, 角色)。
@@ -140,6 +149,10 @@ var quotaKeyRoles = map[string]struct {
 	"addon_quota_remaining": {"addon_quota", roleRemaining},
 	"addon_quota_total":     {"addon_quota", roleTotal},
 	"addon_quota_used":      {"addon_quota", roleUsed},
+	// org_package 族：Qoder 的组织共享资源包（国内版团队账号的「资源包」）。
+	"org_package_remaining": {"org_package", roleRemaining},
+	"org_package_total":     {"org_package", roleTotal},
+	"org_package_used":      {"org_package", roleUsed},
 	// token_plan 族：MiniMax Token Plan 的 token 余量。点数（default 族）与
 	// token 计划并存时各自成族，Totals 按「有容量者优先」取族，互不覆盖。
 	"token_remaining": {"token_plan", roleRemaining},

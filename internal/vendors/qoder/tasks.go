@@ -19,8 +19,9 @@ import (
 
 // 本文件实现 Qoder 的额度查询。
 //
-// 与 WorkBuddy 的积分余额不同，Qoder 的额度是「套餐用量桶」：上游返回
-// userQuota / addOnQuota 两个对象，各有 used / total / remaining。
+// 与 WorkBuddy 的积分余额不同，Qoder 的额度是「用量桶」：上游返回
+// userQuota（套餐）、addOnQuota（加购）与 orgResourcePackage（组织共享
+// 资源包）三个对象，各有 used / total(或 cap) / remaining。
 // 归一成宿主的 QuotaFetchResponse（Summary 放关键数字，Groups 放明细）。
 
 // quotaHTTPTimeout 是额度相关请求的上限。
@@ -39,6 +40,7 @@ type Quota struct {
 	Plan            string
 	UserQuota       *QuotaBucket
 	AddonQuota      *QuotaBucket
+	OrgPackage      *QuotaBucket
 	IsQuotaExceeded bool
 	ExpiresAt       int64
 }
@@ -61,6 +63,7 @@ func FetchQuota(ctx context.Context, cred *Credential) (*Quota, error) {
 		ExpiresAt:       int64(toFloat(raw, "expiresAt")),
 		UserQuota:       extractQuotaBucket(raw, "userQuota"),
 		AddonQuota:      extractQuotaBucket(raw, "addOnQuota"),
+		OrgPackage:      extractOrgPackage(raw),
 	}, nil
 }
 
@@ -138,12 +141,27 @@ func fetchPlanTierName(ctx context.Context, endpoints Endpoints, token string) s
 // 页面显示「上游未返回额度」，而真实语义是「有额度信息，只是余额为 0」。
 func extractQuotaBucket(data map[string]any, key string) *QuotaBucket {
 	obj, okObj := data[key].(map[string]any)
-	if !okObj || len(obj) == 0 {
+	if !okObj {
 		return nil
+	}
+	return quotaBucketFrom(obj)
+}
+
+// quotaBucketFrom 把一个额度桶对象解析成 QuotaBucket（空对象 → nil）。
+//
+// 组织共享资源包的总额字段叫 cap 而不是 total（见 extractOrgPackage），
+// 两个名字都是「这个桶一共多少」，因此在这里统一读，调用方不必区分。
+func quotaBucketFrom(obj map[string]any) *QuotaBucket {
+	if len(obj) == 0 {
+		return nil
+	}
+	total := toFloat(obj, "total")
+	if _, okTotal := obj["total"]; !okTotal {
+		total = toFloat(obj, "cap")
 	}
 	bucket := &QuotaBucket{
 		Used:      toFloat(obj, "used"),
-		Total:     toFloat(obj, "total"),
+		Total:     total,
 		Remaining: toFloat(obj, "remaining"),
 	}
 	if reset, okReset := obj["resetTime"].(string); okReset {
@@ -152,6 +170,23 @@ func extractQuotaBucket(data map[string]any, key string) *QuotaBucket {
 		bucket.ResetTime = reset
 	}
 	return bucket
+}
+
+// extractOrgPackage 提取组织共享资源包（orgResourcePackage）。
+//
+// 国内版团队账号的「资源包」就是它：由组织统一购买、团队成员共享，字段
+// 与套餐桶不同——总额叫 cap，另外带 available 说明当前能不能取用。
+// available=false（过期 / 停用 / 已退还）时余额取不出来，按桶不存在处理，
+// 否则账号表会显示一份无法使用的额度。
+func extractOrgPackage(data map[string]any) *QuotaBucket {
+	obj, okObj := data["orgResourcePackage"].(map[string]any)
+	if !okObj {
+		return nil
+	}
+	if available, okAvailable := obj["available"].(bool); okAvailable && !available {
+		return nil
+	}
+	return quotaBucketFrom(obj)
 }
 
 // BuildQuotaResponse 把上游额度翻译成宿主的归一化结构。
@@ -168,6 +203,9 @@ func BuildQuotaResponse(quota *Quota) pluginapi.QuotaFetchResponse {
 	if group := quotaGroup("个人拓展包", quota.AddonQuota); group != nil {
 		response.Groups = append(response.Groups, *group)
 	}
+	if group := quotaGroup("组织资源包", quota.OrgPackage); group != nil {
+		response.Groups = append(response.Groups, *group)
+	}
 	if quota.UserQuota != nil {
 		// total 必须一并输出：页面的「剩余/总额 + 使用率」要它才能算比例。
 		// 上游对 Free 计划可能给 total=0（额度按剩余量计），此时仍输出 0——
@@ -182,6 +220,12 @@ func BuildQuotaResponse(quota *Quota) pluginapi.QuotaFetchResponse {
 			pluginapi.QuotaMetric{Key: "addon_quota_remaining", Label: "拓展包剩余额度", Value: quota.AddonQuota.Remaining, Unit: "credits"},
 			pluginapi.QuotaMetric{Key: "addon_quota_total", Label: "拓展包总额度", Value: quota.AddonQuota.Total, Unit: "credits"},
 			pluginapi.QuotaMetric{Key: "addon_quota_used", Label: "拓展包已用额度", Value: quota.AddonQuota.Used, Unit: "credits"})
+	}
+	if quota.OrgPackage != nil {
+		response.Summary = append(response.Summary,
+			pluginapi.QuotaMetric{Key: "org_package_remaining", Label: "资源包剩余额度", Value: quota.OrgPackage.Remaining, Unit: "credits"},
+			pluginapi.QuotaMetric{Key: "org_package_total", Label: "资源包总额度", Value: quota.OrgPackage.Total, Unit: "credits"},
+			pluginapi.QuotaMetric{Key: "org_package_used", Label: "资源包已用额度", Value: quota.OrgPackage.Used, Unit: "credits"})
 	}
 	if quota.IsQuotaExceeded {
 		response.Summary = append(response.Summary,
