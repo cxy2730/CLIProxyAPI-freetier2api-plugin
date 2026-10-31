@@ -40,22 +40,25 @@ type Service struct {
 // jobStopGrace 是关停时等待后台动作收尾的宽限期。
 const jobStopGrace = 5 * time.Second
 
-// jobContext 返回后台动作应使用的上下文；后台循环未启动时退回 Background。
-func (s *Service) jobContext() context.Context {
-	s.jobMu.Lock()
-	defer s.jobMu.Unlock()
-	if s.jobCtx != nil {
-		return s.jobCtx
-	}
-	return context.Background()
-}
-
 // trackJob 在后台跑一个动作并登记到 jobWG，Stop 会等它结束。
+//
+// Add 必须与 Stop 的 Wait 互斥：两者都在 jobMu 下判断 jobCtx，Stop 先把
+// jobCtx 置空再 Wait，因此不会出现「Wait 已开始又 Add」这种 WaitGroup 的
+// 未定义用法。调度未启动时仍执行，但不登记（没有东西会等它）。
 func (s *Service) trackJob(run func(ctx context.Context)) {
-	ctx := s.jobContext()
-	s.jobWG.Add(1)
+	s.jobMu.Lock()
+	ctx, tracked := s.jobCtx, s.jobCtx != nil
+	if tracked {
+		s.jobWG.Add(1)
+	}
+	s.jobMu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	go func() {
-		defer s.jobWG.Done()
+		if tracked {
+			defer s.jobWG.Done()
+		}
 		run(ctx)
 	}()
 }

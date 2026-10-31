@@ -4,6 +4,7 @@ package tasks
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -134,9 +135,11 @@ func (s *Service) runAutoAllTargets(ctx context.Context, callbackID string, targ
 		Results []autoAllResult `json:"results,omitempty"`
 	}
 	out := make([]accountResult, 0, len(loaded))
+	cancelled := false
 	for index, account := range loaded {
 		// 关停时 ctx 会先被取消：不要在卸载插件的路上再起一次上游请求。
 		if ctx.Err() != nil {
+			cancelled = true
 			break
 		}
 		if onProgress != nil {
@@ -157,6 +160,7 @@ func (s *Service) runAutoAllTargets(ctx context.Context, callbackID string, targ
 		s.unlockAccount(account.uid())
 		out = append(out, entry)
 		if !core.SleepContext(ctx, accountGap) {
+			cancelled = true
 			break
 		}
 	}
@@ -168,7 +172,14 @@ func (s *Service) runAutoAllTargets(ctx context.Context, callbackID string, targ
 			}
 		}
 	}
-	return map[string]any{"ok": true, "accounts": len(out), "tasks_done": done, "results": out}
+	payload := map[string]any{"ok": true, "accounts": len(out), "tasks_done": done, "results": out}
+	if cancelled {
+		// 关停/超时会把一轮砍在中途：如实标注「没跑完」，否则结果看起来像
+		// 全部账号都执行过了。
+		payload["cancelled"] = true
+		payload["message"] = fmt.Sprintf("执行被中断：已完成 %d / %d 个账号", len(out), len(loaded))
+	}
+	return payload
 }
 
 // ActivityStatus 返回各账号的活动任务状态（/school/status 的兼容投影）。

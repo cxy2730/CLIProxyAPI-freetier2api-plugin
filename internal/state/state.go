@@ -158,6 +158,11 @@ type Store struct {
 	// dirty 表示内存状态比磁盘新；flushing 表示已有一个写盘任务在排队。
 	dirty    bool
 	flushing bool
+	// flushTimer 是挂起的合并写盘定时器。
+	//
+	// 它和任务/后台动作一样属于插件生命周期：只 Flush 不取消定时器，插件被
+	// 卸载后它仍会醒来写盘（Stop 会取消它）。
+	flushTimer *time.Timer
 }
 
 // NewStore 创建一个尚未绑定目录的 Store。
@@ -351,23 +356,27 @@ func (s *Store) Mutate(mutate func(*State)) {
 	}
 	mutate(s.cache)
 	s.dirty = true
-	schedule := !s.flushing
-	if schedule {
+	if !s.flushing {
 		s.flushing = true
+		s.flushTimer = time.AfterFunc(saveDelay, s.flush)
 	}
 	s.mu.Unlock()
-	if schedule {
-		time.AfterFunc(saveDelay, s.flush)
-	}
 }
 
-// Flush 立即把未落盘的修改写入磁盘（关停路径与测试用）。
+// Flush 立即把未落盘的修改写入磁盘，并取消挂起的定时器。
+//
+// 插件关停路径必须走它：只写盘不取消定时器，卸载后定时器仍会醒来碰状态。
 func (s *Store) Flush() { s.flush() }
 
 func (s *Store) flush() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.flushing = false
+	// 显式 Flush/Stop 时取消挂起的定时器，避免它在关停后再写一次。
+	if s.flushTimer != nil {
+		s.flushTimer.Stop()
+		s.flushTimer = nil
+	}
 	if !s.dirty {
 		return
 	}
@@ -454,6 +463,10 @@ func quarantine(path string) string {
 // Reset 清空内存缓存（测试用）。
 func (s *Store) Reset() {
 	s.mu.Lock()
+	if s.flushTimer != nil {
+		s.flushTimer.Stop()
+		s.flushTimer = nil
+	}
 	s.cache = nil
 	s.dirty = false
 	s.flushing = false

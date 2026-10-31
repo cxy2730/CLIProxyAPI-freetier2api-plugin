@@ -3,6 +3,7 @@ package state
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -117,6 +118,44 @@ func TestMutateCoalescesWrites(t *testing.T) {
 	store.Flush()
 	if _, errStat := os.Stat(path + ".bak"); errStat != nil {
 		t.Fatalf("缺少 .bak 备份: %v", errStat)
+	}
+}
+
+// Flush 是关停路径：写掉窗口内改动，并取消挂起的合并写盘定时器。
+//
+// 只写盘不取消定时器，插件卸载后它还会醒来碰状态；这里用白盒断言钉住
+// 「Flush 之后 flushTimer 为空」。
+func TestFlushCancelsPendingTimerAndSaves(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore()
+	store.Configure(dir)
+	if _, err := store.Load(); err != nil {
+		t.Fatal(err)
+	}
+	store.Mutate(func(current *State) { current.Checkin["u"] = CheckinRecord{LastDate: "2026-10-31"} })
+	if store.flushTimer == nil {
+		t.Fatal("Mutate 之后应有挂起的合并写盘定时器")
+	}
+	store.Flush()
+	if store.flushTimer != nil {
+		t.Fatal("Flush 之后不应留下挂起的定时器")
+	}
+
+	path := filepath.Join(dir, "state.json")
+	raw, errRead := os.ReadFile(path)
+	if errRead != nil {
+		t.Fatalf("Flush 后应已落盘: %v", errRead)
+	}
+	if !strings.Contains(string(raw), "2026-10-31") {
+		t.Fatalf("Flush 未写入窗口内改动: %s", raw)
+	}
+
+	// 第二轮：说明前一次的定时器已清掉，新窗口照常工作。
+	store.Mutate(func(current *State) { current.Checkin["u"] = CheckinRecord{LastDate: "2026-11-01"} })
+	store.Flush()
+	raw, errRead = os.ReadFile(path)
+	if errRead != nil || !strings.Contains(string(raw), "2026-11-01") {
+		t.Fatalf("第二次 Flush 未写入: %s (%v)", raw, errRead)
 	}
 }
 

@@ -80,8 +80,8 @@ func (a *App) StopBackgroundWork() {
 	}
 	a.tasks.Stop()
 	a.backgroundWG.Wait()
-	// 写盘是合并到短窗口里做的（state.saveDelay）：关停前必须把窗口内
-	// 尚未落盘的改动写掉，否则最后一次签到记录 / 模型缓存会丢。
+	// 写盘是合并到短窗口里做的（state.saveDelay）：关停前必须 Flush——它既把
+	// 窗口内的改动写掉，也取消挂起的定时器（否则卸载后定时器仍会醒来碰状态）。
 	a.store.Flush()
 }
 
