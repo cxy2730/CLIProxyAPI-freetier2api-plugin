@@ -61,7 +61,7 @@ func (s *Service) handleTasksAutoAll(req pluginapi.ManagementRequest) pluginapi.
 	if errDecode != nil {
 		return BadJSONRequestResponse()
 	}
-	payload, status := s.tasks.StartAutoAll(hostbridge.RequestCallbackID(req), body.AccountIDs)
+	payload, status := s.tasks.StartAutoAll(body.AccountIDs)
 	return JSONResponse(status, payload)
 }
 

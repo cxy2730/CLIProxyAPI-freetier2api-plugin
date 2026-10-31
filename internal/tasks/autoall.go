@@ -31,7 +31,12 @@ type autoAllJob struct {
 //
 // 同一时刻只允许一个后台任务：重复点击返回 409 和正在执行的那个编号，
 // 前端据此直接接着轮询，不会起两份任务把上游打成并发。
-func (s *Service) StartAutoAll(callbackID string, targets []string) (map[string]any, int) {
+//
+// 账号枚举与上游请求一律走**后台作用域**（空回调 ID），不能沿用调用方管理
+// 请求的 X-Host-Callback-Id：宿主在 management.handle 返回时就关闭这批回调
+// scope，之后再用它调 host.auth.list / host.http.do 会被拒
+// （host callback ID is not open），表现成「一键完成刚启动就失败」。
+func (s *Service) StartAutoAll(targets []string) (map[string]any, int) {
 	job := s.autoAll
 	job.mu.Lock()
 	if job.running {
@@ -52,7 +57,7 @@ func (s *Service) StartAutoAll(callbackID string, targets []string) (map[string]
 	s.trackJob(func(parent context.Context) {
 		ctx, cancel := context.WithTimeout(parent, autoAllTimeout)
 		defer cancel()
-		payload := s.runAutoAllTargets(ctx, callbackID, targets, func(done, total int) {
+		payload := s.runAutoAllTargets(ctx, "", targets, func(done, total int) {
 			job.mu.Lock()
 			if job.seq == seq {
 				job.progress = done

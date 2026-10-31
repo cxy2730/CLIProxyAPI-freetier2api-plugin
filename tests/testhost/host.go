@@ -36,6 +36,10 @@ type Host struct {
 
 	// calls 记录被调用的宿主方法名（供断言）。
 	calls []string
+	// callbackIDs 记录每次调用的宿主回调 ID：空串表示后台作用域。
+	// 真实宿主在 management.handle 返回后就会关掉那批回调 scope，因此
+	// 「后台任务带上了请求回调 ID」必须能在测试里被发现。
+	callbackIDs []string
 	// authFiles 是 host.auth.list 的返回内容。
 	authFiles []core.HostAuth
 	// authJSON 是 auth_index → 凭证 JSON。
@@ -73,6 +77,7 @@ func New() *Host {
 func (h *Host) Call(callbackID, method string, payload any) (json.RawMessage, error) {
 	h.mu.Lock()
 	h.calls = append(h.calls, method)
+	h.callbackIDs = append(h.callbackIDs, callbackID)
 	h.mu.Unlock()
 
 	switch method {
@@ -96,6 +101,13 @@ func (h *Host) Call(callbackID, method string, payload any) (json.RawMessage, er
 		return h.handleStreamClosePayload(payload)
 	}
 	return nil, fmt.Errorf("fake host does not implement %s", method)
+}
+
+// CallbackIDs 返回每次宿主回调携带的回调 ID（副本，按调用顺序）。
+func (h *Host) CallbackIDs() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.callbackIDs...)
 }
 
 // SnapshotAuthFiles 返回当前注册的凭证（副本）。
