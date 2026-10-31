@@ -288,8 +288,8 @@ const TaskKindUG = "ug"
 
 // TaskSpecs 声明 Trae 家族自己的任务族。
 //
-// 只声明活动福利这一个族，且刻意不给 DefaultHours：5 个入口是活动期才开的
-// 领奖口，不是每天都有东西可领，默认排程只会每天白打 5 次空请求。需要时在
+// 只声明活动福利这一个族，且刻意不给 DefaultHours：2 个入口都是活动期才开的
+// 领奖口，不是每天都有东西可领，默认排程只会每天白打 2 次空请求。需要时在
 // 控制台手动触发（或自己加排程）。国际版没有这套活动，故不声明。
 func (v *adapter) TaskSpecs() []core.TaskSpec {
 	if !v.SupportsCheckin() {
@@ -298,7 +298,7 @@ func (v *adapter) TaskSpecs() []core.TaskSpec {
 	return []core.TaskSpec{{
 		Kind:        TaskKindUG,
 		Label:       "活动福利领取",
-		Description: "领取 Trae 国内版的竞赛 / 联合活动 / 抽奖 / 分享奖励",
+		Description: "领取 Trae 国内版的竞赛奖励与作品抽奖",
 		// Route 让控制台按 ManualSpecs 自动出现手动触发入口：宿主只注册带
 		// Route 的手动族（admin 里 Route 为空直接跳过），少了它这个「手动族」
 		// 就只能靠手改排程配置触发。

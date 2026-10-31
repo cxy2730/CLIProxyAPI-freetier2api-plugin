@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // 活动福利领取的行为测试。
@@ -45,12 +46,23 @@ func TestUGActionsAreBatchable(t *testing.T) {
 	if len(actions) != 2 {
 		t.Fatalf("活动入口数 = %d, 期望 2（竞赛奖励 + 作品抽奖）", len(actions))
 	}
-	for _, excluded := range []string{EpUGCobrandClaim, EpUGWorkFissionShare, EpUGCodeFissionShare} {
+	// 需要入参的端点已从代码里删掉（连常量一起），这里用路径字面量做黑名单，
+	// 防止日后有人凭记忆把它们加回批量入口。
+	for _, excluded := range []string{
+		"/trae/api/v2/ug/cobrand/claim",
+		"/trae/api/v2/ug/work_fission/share_link",
+		"/trae/api/v2/ug/code_fission/share_link",
+	} {
 		for _, action := range actions {
 			if action.Path == excluded {
 				t.Errorf("需要入参的端点不该进批量入口: %s", excluded)
 			}
 		}
+	}
+	// 预算必须严格大于「端点个数 × 单端点 30s」，否则第一个端点一旦卡满，
+	// 后面的端点剩下的预算连握手都不够。加端点忘调 ugRoundTimeout 时这里失败。
+	if budget := time.Duration(len(actions)) * 30 * time.Second; ugRoundTimeout <= budget {
+		t.Fatalf("ugRoundTimeout = %v，必须大于 端点数×30s = %v", ugRoundTimeout, budget)
 	}
 	seen := map[string]bool{}
 	for _, action := range actions {
@@ -287,7 +299,7 @@ func TestClassifyUGMessage(t *testing.T) {
 // TestTaskSpecsFollowRegion 验证：只有国内版声明活动福利族，且是手动族。
 //
 // 不带 DefaultHours 是刻意的：这些入口只在活动期有东西可领，默认排程只会
-// 每天白打 6 次空请求。
+// 每天白打 2 次空请求。
 func TestTaskSpecsFollowRegion(t *testing.T) {
 	cn := &adapter{config: ConfigFor(RegionCN)}
 	specs := cn.TaskSpecs()
@@ -331,23 +343,32 @@ func TestRunScheduledRejectsUnknownKind(t *testing.T) {
 // 实测 claim_package 回 {"eligible":false,...}：没有 code。按 code==nil 一律
 // 归失败，会把「当前账号不满足条件」报成上游故障，用户只能看到一串无意义的
 // 失败横幅。
+//
+// 每个用例连文案一起断言：三个判定分支（不满足条件 / 可参与但未发放 / 本次
+// 未发放）是用户唯一能看到的输出，改判定时文案错配比状态错更难发现。
 func TestClaimUGReadsNoCodeState(t *testing.T) {
 	cases := []struct {
-		name   string
-		body   string
-		status UGStatus
+		name    string
+		body    string
+		status  UGStatus
+		message string
 	}{
-		{"资格不足-顶层", `{"eligible":false,"message":"no quota"}`, UGUnavailable},
-		{"资格不足-嵌套", `{"data":{"eligible":false}}`, UGUnavailable},
-		{"本次已发放", `{"eligible":true,"newly_granted":true}`, UGClaimed},
-		{"可参与但未发放", `{"eligible":true,"newly_granted":false}`, UGUnavailable},
+		{"资格不足-顶层", `{"eligible":false,"message":"no quota"}`, UGUnavailable, "当前账号不满足活动条件"},
+		{"资格不足-嵌套", `{"data":{"eligible":false}}`, UGUnavailable, "当前账号不满足活动条件"},
+		{"本次已发放", `{"eligible":true,"newly_granted":true}`, UGClaimed, "上游本次发放成功"},
+		{"可参与但未发放", `{"eligible":true,"newly_granted":false}`, UGUnavailable, "活动可参与，但本次未发放"},
 		// 两个字段同时出现且互相矛盾：以「本次发放成功」为准。上游真的发了
 		// 东西，却因为 eligible=false 报「不满足条件」，等于把领到的奖励吞掉。
-		{"资格不足但本次已发放", `{"eligible":false,"newly_granted":true}`, UGClaimed},
+		{"资格不足但本次已发放", `{"eligible":false,"newly_granted":true}`, UGClaimed, "上游本次发放成功"},
 		// 只给 newly_granted=false，没有 eligible：本次没发东西，但不是
 		// 「不满足条件」，文案不能张冠李戴。
-		{"仅本次未发放", `{"newly_granted":false}`, UGUnavailable},
-		{"本次已发放-嵌套", `{"data":{"eligible":false,"newly_granted":true}}`, UGClaimed},
+		{"仅本次未发放", `{"newly_granted":false}`, UGUnavailable, "本次未发放"},
+		{"本次已发放-嵌套", `{"data":{"eligible":false,"newly_granted":true}}`, UGClaimed, "上游本次发放成功"},
+		// 混合形状：顶层只给一个字段、data 层另给一个。必须逐字段回落补齐——
+		// 「顶层有任一字段就整层信顶层」会把 data 里的 newly_granted 丢掉，
+		// 把已发放读成「可参与但本次未发放」。
+		{"混合-顶层eligible+data发放", `{"eligible":true,"data":{"newly_granted":true}}`, UGClaimed, "上游本次发放成功"},
+		{"混合-顶层未发放+data不满足", `{"newly_granted":false,"data":{"eligible":false}}`, UGUnavailable, "当前账号不满足活动条件"},
 	}
 	for _, item := range cases {
 		stubHost(t)
@@ -364,13 +385,13 @@ func TestClaimUGReadsNoCodeState(t *testing.T) {
 			if result.Status != item.status {
 				t.Fatalf("%s: %s status = %d, 期望 %d", item.name, result.Key, result.Status, item.status)
 			}
-			if strings.TrimSpace(result.Message) == "" {
-				t.Fatalf("%s: %s 必须带原因", item.name, result.Key)
+			if result.Message != item.message {
+				t.Fatalf("%s: %s message = %q, 期望 %q", item.name, result.Key, result.Message, item.message)
 			}
-			// 这条路径上游没给业务码，Code 是零值占位；标记必须置上，
-			// 否则后续按 Code==0 统计会把这些当成「上游回 0 = 已领取」。
-			if !result.NoCode {
-				t.Fatalf("%s: %s 缺 NoCode 标记", item.name, result.Key)
+			// 这条路径上游没给业务码，Code 是零值占位——所以只能按 Status 判，
+			// 不能按 Code==0 判「上游回 0 = 已领取」。
+			if result.Code != 0 {
+				t.Fatalf("%s: %s Code = %d, 这条路径不该有业务码", item.name, result.Key, result.Code)
 			}
 		}
 	}
@@ -478,19 +499,20 @@ func TestReadUGState(t *testing.T) {
 }
 
 // TestUGDetailText 验证：机器文案翻成中文提示，认不出的原样返回。
+//
+// 只覆盖可达输入：需要活动/作品 ID 的三个端点已不在批量入口里，缺参类文案
+// （param is invalid / 9080）不会再出现在结果中，所以那条翻译分支已删除。
+// 这里仍保留一条「不可达也不能乱翻」的断言，防止有人日后顺手加回翻译。
 func TestUGDetailText(t *testing.T) {
 	cases := map[string]string{
-		"param is invalid": "上游要求活动/作品参数，插件无法自动获取",
-		"参数缺失":             "上游要求活动/作品参数，插件无法自动获取",
 		"活动暂不可用":           "活动暂不可用",
+		"活动暂未开放":           "活动暂不可用",
 		"HTTP 500 服务繁忙":    "HTTP 500 服务繁忙",
+		"param is invalid": "param is invalid",
 	}
 	for message, want := range cases {
 		if got := ugDetailText(message); got != want {
 			t.Errorf("ugDetailText(%q) = %q, 期望 %q", message, got, want)
 		}
-	}
-	if got := (UGResult{Label: "作品抽奖", Status: UGUnavailable, Message: "param is invalid"}).Describe(); !strings.Contains(got, "上游要求活动/作品参数") {
-		t.Errorf("Describe 未翻译缺参文案: %s", got)
 	}
 }

@@ -48,9 +48,11 @@ const (
 	// DefaultClientVersion 是出站 x-client-version 头的内置值。
 	//
 	// 注意这不是抓包值：官方下载页只给下载按钮、不显示版本号，公开渠道
-	// 无法核对具体子版本。这里取桌面发版线 1.1.x 的 v1.1.3，理由是它与
-	// 登录奖励域（同一桌面客户端）保持同一版本，且比原值 v1.1.0 更接近
-	// 当前发布线。若日后抓到真实客户端流量，以抓包为准覆盖此值。
+	// 无法核对具体子版本。这里取桌面发版线 1.1.x 的 v1.1.3，只是「比原值
+	// v1.1.0 更接近当前发布线」这一判断，没有上游证据。若日后抓到真实
+	// 客户端流量，以抓包为准覆盖此值。
+	//
+	// 登录奖励域另有 grantClientVersion，不复用此值，原因见那里的说明。
 	DefaultClientVersion = "v1.1.3"
 )
 
@@ -86,10 +88,14 @@ const grantClientPlatform = "desktop-windows"
 
 // grantClientVersion 是登录奖励接口使用的客户端版本（带 v 前缀）。
 //
-// 与 grantClientPlatform 保持一致：平台头声明 desktop-windows，版本就取
-// Windows 客户端的当前发布版本。当前两个域取同一个发布版本，所以直接复用
-// DefaultClientVersion；日后若对话域与登录域分叉，在这里改回独立字面量。
-const grantClientVersion = DefaultClientVersion
+// 刻意独立声明，不复用 DefaultClientVersion：两个域的版本值都**没有抓包
+// 支撑**，复用会把「它们本来就该一致」变成循环论证——拿一个没依据的值去
+// 证明另一个没依据的值。分开写之后，哪个域日后抓到真实流量就改哪个，另一
+// 个不受影响。
+//
+// 当前取桌面发版线 1.1.x 的 v1.1.3，与 DefaultClientVersion 同值；这是选择，
+// 不是推断。
+const grantClientVersion = "v1.1.3"
 
 // ApplyGrantHeaders 写入登录奖励接口的客户端识别头。
 //
