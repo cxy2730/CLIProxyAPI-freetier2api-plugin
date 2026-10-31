@@ -203,6 +203,11 @@ func (r *Registry) ParseCredential(raw []byte, fileNameHint string, attributes m
 	if credential.FileIDValue() == "" {
 		credential.SetFileID(FileIDFromFileName(fileName))
 	}
+	if credential.VendorIDValue() == "" {
+		// 老凭证可能没写 vendor 字段：按解析出的供应商补齐，避免下游按
+		// VendorID 拼的键（签到历史、信标去重）出现以空串开头的分叉键。
+		credential.VendorID = vendor.ID()
+	}
 	applyAttributeOverrides(credential, attributes)
 	return credential, true
 }

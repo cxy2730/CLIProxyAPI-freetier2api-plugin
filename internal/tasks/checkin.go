@@ -51,22 +51,33 @@ func (s *Service) Checkin(ctx context.Context, vendor core.Vendor, credential *c
 	// 「同账号并发会话」判风控，会随机回 429 或直接判失败。锁不上就让
 	// 调用方稍后再试，不硬闯。
 	uid := credential.FileIDValue()
+	if uid == "" {
+		// 没有账号身份就无法串行化，也写不进状态；直接说清楚，而不是给出
+		// 「该账号正在执行其它任务」这种误导性的锁冲突文案。
+		return nil, fmt.Errorf("账号缺少文件标识，无法执行签到")
+	}
 	if !s.tryLockAccount(uid) {
 		return nil, fmt.Errorf("该账号正在执行其它任务，请稍后再试")
 	}
 	defer s.unlockAccount(uid)
 
-	beacon := dailyBeacon(vendor)
-	if beacon && s.dailyBeaconSentToday(vendor, credential) {
-		// 上游热力图是异步聚合的，同一天的第二个排程点读到的可能还是没亮，
-		// 再上报一次就会把当天计数翻倍。本地已记录过就跳过。
-		result := &core.CheckinResult{
-			Already: true,
-			Message: "今日活跃信标已上报过（本地记录），跳过重复上报",
-			Streak:  s.lastStreak(credential),
+	// 每日活跃信标本地区重：上游热力图是异步聚合的，同一天的第二个排程点
+	// 读到的可能还是没亮，再上报一次就会把当天计数翻倍。
+	//
+	// 去重凭据与上次连签天数一次快照读出来：State() 是整份深拷贝，逐字段读
+	// 等于为每个字段复制一遍状态。
+	if beacon := dailyBeacon(vendor); beacon {
+		key := checkinHistoryKey(vendor, credential)
+		snapshot := s.deps.State()
+		if key != "" && snapshot.DailyBonusSent[key] == s.todayString() {
+			result := &core.CheckinResult{
+				Already: true,
+				Message: "今日活跃信标已上报过（本地记录），跳过重复上报",
+				Streak:  snapshot.Checkin[uid].Streak,
+			}
+			s.recordCheckinResult(vendor, credential, trigger, result)
+			return result, nil
 		}
-		s.recordCheckinResult(vendor, credential, trigger, result)
-		return result, nil
 	}
 
 	result, errCheckin := provider.Checkin(ctx, credential)
@@ -86,20 +97,6 @@ func (s *Service) Checkin(ctx context.Context, vendor core.Vendor, credential *c
 func dailyBeacon(vendor core.Vendor) bool {
 	beacon, okBeacon := core.As[core.DailyBeaconVendor](vendor)
 	return okBeacon && beacon.CheckinUsesDailyBeacon()
-}
-
-// dailyBeaconSentToday 报告本地是否已记录今天上报过活跃信标。
-func (s *Service) dailyBeaconSentToday(vendor core.Vendor, credential *core.Credential) bool {
-	key := checkinHistoryKey(vendor, credential)
-	if key == "" {
-		return false
-	}
-	return s.deps.State().DailyBonusSent[key] == s.todayString()
-}
-
-// lastStreak 读上一次记录的连签天数（本地去重命中时沿用它，页面才不会显示 0）。
-func (s *Service) lastStreak(credential *core.Credential) int64 {
-	return s.deps.State().Checkin[credential.FileIDValue()].Streak
 }
 
 // checkinResultStatus 把供应商结果映射成历史状态。

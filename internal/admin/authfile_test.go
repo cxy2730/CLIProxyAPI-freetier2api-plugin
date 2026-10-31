@@ -51,3 +51,30 @@ func TestSaveAuthFileAlignsUID(t *testing.T) {
 		t.Fatalf("vendor = %q (%v)，其余字段必须原样保留", vendor, errUnmarshal)
 	}
 }
+
+// TestSanitizeAuthFileName 锁定凭证文件名的收敛规则。
+//
+// 文件名一路来自上游登录响应/账号昵称，早期直接 filepath.Join(dir, name)：
+// 带 `/` 或 `..` 的取值会把凭证写到目录外，绝对路径更会直接忽略 dir。
+func TestSanitizeAuthFileName(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"workbuddy-user.json", "workbuddy-user.json"},
+		{"  spaced.json  ", "spaced.json"},
+		{"../../etc/passwd", "passwd.json"},
+		{"/abs/path/traecn-u1.json", "traecn-u1.json"},
+		{`..\..\windows\evil.json`, `_.._windows_evil.json`}, // 反斜杠不是 POSIX 分隔符，替换后去掉前导点
+		{"name:with*bad?chars.json", "name_with_bad_chars.json"},
+		{"no-ext", "no-ext.json"},
+		{"...", ""},
+		{"", ""},
+		{"   ", ""},
+	}
+	for _, c := range cases {
+		if got := sanitizeAuthFileName(c.input); got != c.want {
+			t.Errorf("sanitizeAuthFileName(%q) = %q, want %q", c.input, got, c.want)
+		}
+	}
+}

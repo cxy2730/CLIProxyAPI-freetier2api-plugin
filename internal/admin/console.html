@@ -759,7 +759,10 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       return resp.json().then(function (data) {
         if (!resp.ok) {
           var msg = (data && data.error) ? data.error : ("HTTP " + resp.status);
-          throw new Error(msg);
+          var failure = new Error(msg);
+          // 把状态码带出去：调用方要按 409 / 400 分流，而不是匹配中文文案。
+          failure.status = resp.status;
+          throw failure;
         }
         // 宿主把插件的响应体**原样**透传给浏览器（{ok, result} 那层信封是
         // 插件与宿主之间的 RPC 格式，不会到达这里）。因此直接返回 body，
@@ -3049,7 +3052,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       pollAutoAll(btn);
     }).catch(function (err) {
       // 409 = 已有一个后台任务在跑：不当成失败，直接接着轮询它。
-      if (String((err && err.message) || "").indexOf("正在执行中") >= 0) {
+      if (err && err.status === 409) {
         pollAutoAll(btn);
         return;
       }

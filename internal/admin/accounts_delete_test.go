@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"freetier2api-plugin/internal/core"
+	"freetier2api-plugin/internal/state"
 )
 
 // deleteTestVendor 的最小凭证解析：按 vendor / uid 两个字段即可支撑归属比对。
@@ -161,5 +162,44 @@ func TestSafeAuthFileForDeleteRejectsForeignCredential(t *testing.T) {
 	if _, errSafe := safeAuthFilePath(registry, entry,
 		[]byte(`{"vendor":"traecn","uid":"u-1"}`), path); errSafe == nil {
 		t.Fatal("目标文件属于另一个账号时必须拒绝删除")
+	}
+}
+
+// TestPurgeAccountStateClearsAccountRecords 锁定删账号后的状态清理。
+//
+// 签到状态与历史按 FileID 落盘；删掉凭证后这些记录会永远挂在一个不存在的
+// 账号名下，同名新账号重新导入时还会读到上一轮的历史（看起来像「刚签过」）。
+func TestPurgeAccountStateClearsAccountRecords(t *testing.T) {
+	deps := newStubDeps(t)
+	registry := newDeleteTestRegistry(t)
+	service := &Service{deps: deps, registry: registry}
+
+	raw := []byte(`{"vendor":"traecn","uid":"u-1"}`)
+	fileName := "traecn-u-1.json"
+	const fileID = "traecn-u-1"
+	historyKey := state.CheckinHistoryKey("traecn", fileID)
+
+	deps.store.Mutate(func(current *state.State) {
+		current.Checkin[fileID] = state.CheckinRecord{LastDate: "2026-10-31", Streak: 3}
+		current.CheckinHistory[historyKey] = []state.CheckinHistoryEntry{{Status: "success", Message: "ok"}}
+		current.DailyBonusSent[historyKey] = "2026-10-31"
+		// 另一个账号的记录不能被误删。
+		current.Checkin["other-user"] = state.CheckinRecord{LastDate: "2026-10-31"}
+	})
+
+	service.purgeAccountState(raw, fileName)
+
+	snapshot := deps.store.Snapshot()
+	if _, exists := snapshot.Checkin[fileID]; exists {
+		t.Fatal("删除账号后签到状态应被清理")
+	}
+	if _, exists := snapshot.CheckinHistory[historyKey]; exists {
+		t.Fatal("删除账号后签到历史应被清理")
+	}
+	if _, exists := snapshot.DailyBonusSent[historyKey]; exists {
+		t.Fatal("删除账号后信标去重记录应被清理")
+	}
+	if _, exists := snapshot.Checkin["other-user"]; !exists {
+		t.Fatal("其它账号的记录不能受牵连")
 	}
 }

@@ -381,10 +381,12 @@ func (s *Service) deleteAuthFile(ctx context.Context, callbackID string, entry c
 // 账号名下；同一个账号重新导入时还会读到上一轮的历史，看起来像「刚签过」。
 func (s *Service) purgeAccountState(raw []byte, fileName string) {
 	credential, okCredential := s.registry.ParseCredential(raw, fileName, nil)
-	if !okCredential || credential.FileID == "" {
+	if !okCredential || credential.FileIDValue() == "" {
 		return
 	}
-	fileID := credential.FileID
+	fileID := credential.FileIDValue()
+	// 与 tasks.checkinHistoryKey 同口径（vendor.ID() + FileID）：ParseCredential
+	// 已按解析结果补齐 vendor 字段，这里不会再出现空供应商前缀。
 	historyKey := state.CheckinHistoryKey(credential.VendorIDValue(), fileID)
 	s.deps.MutateState(func(current *state.State) {
 		delete(current.Checkin, fileID)
