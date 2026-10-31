@@ -131,6 +131,27 @@ curl http://localhost:8317/v1/messages \
 - 禁用不是删除：只在凭证 JSON 上写宿主的 `disabled` 标记（token 与文件都保留，随时可再启用），删除才会移除凭证文件；
 - 「删除」仍需点两次：第一次进入确认态（5 秒后自动复位），第二次才真正删除。
 
+### 6. CodeArts 签到与推理通道
+
+福利领取合并在既有 **「一键签到」** 与 **「每日自动签到」** 中：在账号表勾选 CodeArts 账号后点击顶部「一键签到」，无需单独的领取按钮。
+
+积分签到与免费福利 Token 是两份独立权益。插件先读取上游 `benefit-gateway-config`：只有 `enabled: true` 才会领取福利 Token；积分已签到、没有积分活动或积分领取失败，不会跳过已开放的福利领取。通道关闭时仅处理积分签到，并明确显示「免费福利通道未开放」。签到不能恢复上游关闭的福利权益。
+
+同一插件进程内，同一账号在同一个北京时间日期领取成功后，后续签到返回「已领取」并跳过重复领取请求；失败不缓存，仍可重试。该成功证明仅在当前进程内有效：重启后会重新查询上游，不把 `4000`、`4006` 或积分签到成功猜成福利已领取。任一链路失败会保留完整原因，不记为当日全部完成。查询额度、刷新模型均不触发领取。
+
+**积分推理默认关闭。** 如明确同意消耗 CodeArts 账号积分，在宿主 `config.yaml` 中开启：
+
+```yaml
+plugins:
+  configs:
+    freetier2api:
+      codearts_credit_enabled: true
+```
+
+配置生效后刷新模型目录。开启时只从账号实际的内置目录获取模型，推理不发送 `maas_type: benefit`，按上游积分规则计费；关闭、未配置或配置值非法时保留原有福利通道。两种模式不会因调用失败而自动互相切换，也不会自动选另一个模型。需要固定供应商时使用 `codearts:<模型ID>`。
+
+目前实测（2026-10-31）福利网关返回 `enabled: false`，旧福利领取接口返回 `4000 invalid channel, group not found`；同一账号的 `deepseek-v4.1-flash-1017` 积分通道可正常回答。此时补领福利无法修复推理，需由用户明确选择是否启用积分通道。自动签到设置仍为 `auto_checkin` / `auto_checkin_at`。
+
 ## 配置说明
 
 在宿主 `config.yaml` 的 `plugins.configs.freetier2api` 下可配置以下常用项（大多数运行期设置可直接在控制台页面调整并即时生效）：
@@ -141,6 +162,7 @@ curl http://localhost:8317/v1/messages \
 | `auto_checkin` | bool | `true` | 每日自动签到开关 |
 | `auto_checkin_at` | string | `10:00` | 每日自动签到时间（`HH:MM`，本地时区）。排程粒度为整点，分钟不为 0 时顺延到下一整点，保证不会早于设定时刻执行 |
 | `auto_tasks` | bool | `true` | 每日自动任务开关 |
+| `codearts_credit_enabled` | bool | `false` | 明确开启 CodeArts 积分推理（消耗账号积分）；默认福利通道，失败不自动切换。修改后刷新模型目录 |
 | `checkin_history_limit` | int | `30` | 每个账号保留的签到历史条数（`<=0` 用默认值 30；控制台签到列可展开查看） |
 | `prompt_mode` | string | `passthrough` | 提示词防御模式：`passthrough`（透传）/ `custom`（替换）/ `append`（追加） |
 | `model_name_tag` | string | `off` | 模型名渠道标识：`off`（默认）/ `prefix` / `suffix`。开启后各供应商的模型对外 ID 自动带渠道前缀或后缀（如 `zcodeglobal-GLM-5.3`），同名模型可按渠道定点选择；标识按供应商统一生成、不区分账号。改动后需宿主重建模型注册表生效（重启或等凭据重载，控制台会提示「待生效」） |

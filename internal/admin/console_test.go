@@ -654,6 +654,19 @@ func TestConsolePageShowsCheckinHistory(t *testing.T) {
 	}
 }
 
+// 福利领取合并在既有签到入口，页面不应按供应商硬编码新按钮。
+func TestConsoleBenefitsUseExistingCheckinEntry(t *testing.T) {
+	page := Page("/plugins/freetier2api")
+	if strings.Contains(page, `account.vendor_id === "codearts"`) || strings.Contains(page, `"领取每日福利"`) {
+		t.Fatal("benefits must use the shared check-in flow")
+	}
+	for _, want := range []string{`runCheckin(selectedAccountIDs(), this)`, `api("POST", "/checkin", { account_ids: accountIDs })`, `r.message`, `loadQuotas(true, accountIDs)`} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("missing shared check-in wiring: %s", want)
+		}
+	}
+}
+
 // TestConsoleScanTableScrollsInsideWrapper 验证扫描表的横向滚动发生在表格自己的容器里。
 //
 // 扫描表有 5 列、窄屏必然超宽。如果让 .card 承担 overflow-x，滚动会连卡片标题一起

@@ -55,9 +55,9 @@ func ToPluginError(err error) error {
 		}
 		code := upstreamCode(upstreamErr.UpstreamKind())
 		if upstreamErr.Retryable() {
-			return RetryablePluginError(code, upstreamErr.Error(), status)
+			return RetryablePluginError(code, err.Error(), status)
 		}
-		return NewPluginError(code, upstreamErr.Error(), status)
+		return NewPluginError(code, err.Error(), status)
 	}
 	return RetryablePluginError("upstream_request_failed", err.Error(), http.StatusBadGateway)
 }

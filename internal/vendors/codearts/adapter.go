@@ -5,8 +5,10 @@ package codearts
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"freetier2api-plugin/cpasdk/pluginapi"
 	"freetier2api-plugin/internal/core"
@@ -15,6 +17,8 @@ import (
 // adapter 是 core.Vendor 在 CodeArts 上的实现。
 type adapter struct {
 	*core.NativeAdapter[*Credential]
+	creditEnabled atomic.Bool
+	benefitClaims sync.Map // 账号 FileID → *benefitCheckinState，实例内隔离。
 
 	// credits 缓存最近一轮目录探测的倍率表（官方模型 ID → 展示文案）。
 	credits core.CreditTable
@@ -23,6 +27,40 @@ type adapter struct {
 	// 归一成目录里的正式 ID。
 	modelsMu      sync.RWMutex
 	modelsByLower map[string]string
+}
+
+const creditEnabledKey = "codearts_credit_enabled"
+
+// Configure 只在运维明确开启时使用积分通道；缺失或非法值均保持免费通道。
+func (v *adapter) Configure(_ core.Settings, raw map[string]string) {
+	enabled, err := strconv.ParseBool(strings.TrimSpace(raw[creditEnabledKey]))
+	v.creditEnabled.Store(err == nil && enabled)
+}
+
+func (v *adapter) ConfigFields() []pluginapi.ConfigField {
+	return []pluginapi.ConfigField{{
+		Name: creditEnabledKey, Type: pluginapi.ConfigFieldTypeBoolean,
+		Description: "CodeArts 积分推理通道，默认关闭。开启后按账号积分计费；不会从免费福利通道自动切换。修改后请刷新模型目录。",
+	}}
+}
+
+// fetchModels 与执行使用同一个显式通道设置。积分通道只展示真实内置目录，
+// 不混入福利专用模型，也不在目录查询失败时猜测可计费的模型。
+func (v *adapter) fetchModels(ctx context.Context, cred *Credential) ([]Model, error) {
+	if !v.creditEnabled.Load() {
+		return FetchModels(ctx, cred)
+	}
+	if cred == nil {
+		return nil, nil
+	}
+	body, err := fetchBuiltinCatalog(ctx, cred)
+	if err != nil {
+		return nil, err
+	}
+	if failure, failed := ErrorFromPayload(body); failed {
+		return nil, failure
+	}
+	return parseBuiltinModels(body)
 }
 
 // Instances 构造 CodeArts 实例（单一部署，国内区）。
@@ -89,7 +127,7 @@ func (v *adapter) StaticModels(ctx context.Context) ([]pluginapi.ModelInfo, erro
 		native, okNative := c.Native.(*Credential)
 		return native, okNative
 	})
-	models, errModels := FetchModels(ctx, probe)
+	models, errModels := v.fetchModels(ctx, probe)
 	if errModels != nil {
 		return nil, errModels
 	}
@@ -99,7 +137,7 @@ func (v *adapter) StaticModels(ctx context.Context) ([]pluginapi.ModelInfo, erro
 // ModelsForAuth 返回该凭证可用的模型。
 func (v *adapter) ModelsForAuth(ctx context.Context, cred *core.Credential) ([]pluginapi.ModelInfo, error) {
 	native, _ := v.Native(cred)
-	models, errModels := FetchModels(ctx, native)
+	models, errModels := v.fetchModels(ctx, native)
 	if errModels != nil {
 		return nil, errModels
 	}
@@ -218,7 +256,7 @@ func (v *adapter) Execute(ctx context.Context, cred *core.Credential, req *core.
 		Credential: native,
 		Body:       v.prepareRequestBody(req.Payload),
 		Stream:     false,
-		Benefit:    true,
+		Benefit:    !v.creditEnabled.Load(),
 	})
 	if errChat != nil {
 		return nil, core.ToPluginError(errChat)
@@ -239,7 +277,7 @@ func (v *adapter) ExecuteStream(ctx context.Context, cred *core.Credential, req 
 		Credential: native,
 		Body:       v.prepareRequestBody(req.Payload),
 		Stream:     true,
-		Benefit:    true,
+		Benefit:    !v.creditEnabled.Load(),
 	})
 	if errStream != nil {
 		return core.ToPluginError(errStream)
@@ -268,7 +306,12 @@ func (v *adapter) Checkin(ctx context.Context, cred *core.Credential) (*core.Che
 	if errNative != nil {
 		return nil, errNative
 	}
-	result, errClaim := Checkin(ctx, native)
+	key := cred.FileIDValue()
+	if key == "" {
+		key = sha256Hex([]byte(native.DomainID + "|" + native.UserID + "|" + native.AccessKeyID))
+	}
+	claimState, _ := v.benefitClaims.LoadOrStore(key, &benefitCheckinState{})
+	result, errClaim := checkin(ctx, native, claimState.(*benefitCheckinState))
 	if errClaim != nil {
 		return nil, core.ToPluginError(errClaim)
 	}
@@ -305,11 +348,13 @@ func (v *adapter) SubmitCallback(ctx context.Context, state, rawURL string) (*co
 
 // 编译期断言：适配器实际具备的供应商能力。
 var (
-	_ core.Vendor            = (*adapter)(nil)
-	_ core.CallbackSubmitter = (*adapter)(nil)
-	_ core.CheckinProvider   = (*adapter)(nil)
-	_ core.LoginProvider     = (*adapter)(nil)
-	_ core.ModelsProvider    = (*adapter)(nil)
-	_ core.QuotaProvider     = (*adapter)(nil)
-	_ core.CreditsProvider   = (*adapter)(nil)
+	_ core.Vendor               = (*adapter)(nil)
+	_ core.CallbackSubmitter    = (*adapter)(nil)
+	_ core.CheckinProvider      = (*adapter)(nil)
+	_ core.LoginProvider        = (*adapter)(nil)
+	_ core.ModelsProvider       = (*adapter)(nil)
+	_ core.QuotaProvider        = (*adapter)(nil)
+	_ core.CreditsProvider      = (*adapter)(nil)
+	_ core.Configurable         = (*adapter)(nil)
+	_ core.ConfigFieldsProvider = (*adapter)(nil)
 )

@@ -1,9 +1,21 @@
 package core
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
 )
+
+func TestToPluginErrorPreservesWrappedMessageAndClassification(t *testing.T) {
+	for _, kind := range []FailureKind{FailureKindCredential, FailureKindTransient} {
+		upstream := &Failure{Kind: kind, Msg: "gateway rejected"}
+		wrapped := fmt.Errorf("积分签到成功；福利领取失败: %w", upstream)
+		converted, ok := ToPluginError(wrapped).(*PluginError)
+		if !ok || converted.Message != wrapped.Error() || converted.HTTPStatus != upstream.HTTPStatus() || converted.Retryable != upstream.Retryable() {
+			t.Fatalf("lost context or classification: %+v", converted)
+		}
+	}
+}
 
 func TestErrorMapping(t *testing.T) {
 	cases := []struct {

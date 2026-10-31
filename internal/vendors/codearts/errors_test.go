@@ -33,10 +33,13 @@ func TestErrorFromPayloadKeepsUpstreamTrace(t *testing.T) {
 		t.Fatalf("code = %q, want InferHub.4004.200", failure.Code)
 	}
 	for _, want := range []string{"benefit not found", "requestId=req-fixture-0001",
-		"traceId=trace-fixture-0001", "code=InferHub.4004.200", benefitHint} {
+		"traceId=trace-fixture-0001", "code=InferHub.4004.200"} {
 		if !strings.Contains(failure.Msg, want) {
 			t.Fatalf("message 缺少 %q: %s", want, failure.Msg)
 		}
+	}
+	if strings.Contains(failure.Msg, benefitHint) {
+		t.Fatal("分类层不应把对话操作指引带进管理端签到结果")
 	}
 }
 
@@ -95,6 +98,9 @@ func TestOpenAIErrorFrame(t *testing.T) {
 	}
 	if !strings.Contains(payload.Error.Message, "benefit not found") {
 		t.Fatalf("message 必须保留上游原文: %s", payload.Error.Message)
+	}
+	if !strings.Contains(payload.Error.Message, benefitHint) || strings.Contains(failure.Msg, benefitHint) {
+		t.Fatal("对话帧应追加指引且不修改原始分类错误")
 	}
 	if payload.Error.Type != "upstream_error" || payload.Error.Code != "InferHub.4004.200" {
 		t.Fatalf("error frame = %+v", payload.Error)
