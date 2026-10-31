@@ -2063,7 +2063,8 @@ func (c *Client) SendDailyBonusBeacon(ctx context.Context, cred *Credential) err
 // 返回的 CheckinResult 语义：
 //   - Already=true：今天已点亮（本轮或早前轮次点亮的都算），无需再上报；
 //   - Already=false：本轮新上报了信标。积分在次日凌晨发放，因此 Credit/Energy
-//     此刻拿不到，恒为 0；Streak 携带热力图上的点亮天数供展示。
+//     此刻拿不到，恒为 0；Streak 是上游连登接口给出的天数（拿不到则为 0，
+//     表示「上游没提供」，上层会保留上一次的值）。
 //
 // 仅接受 global 域凭证：CN 的成长域在 copilot.tencent.com，收入路径是
 // DailyCheckin，两者互不通用。
@@ -2086,62 +2087,32 @@ func (c *Client) GlobalDailyBonus(ctx context.Context, cred *Credential) (*Check
 	// 必须按日期匹配「今天」，不能把最后一格当成今天：热力图顺序、
 	// 是否含今天都不是协议保证的。
 	if heatmapLitOn(lit, todayKey) {
-		streak := int64(consecutiveLitDays(lit, todayKey))
-		return &CheckinResult{Already: true, Streak: streak}, nil
+		return &CheckinResult{Already: true, Streak: c.streakDays(ctx, cred)}, nil
 	}
 	if errSend := c.SendDailyBonusBeacon(ctx, cred); errSend != nil {
 		return nil, fmt.Errorf("report: %w", errSend)
 	}
-	// 热力图聚合滞后数秒，立即回读可能仍未点亮。当天状态以本条上报为准，
-	// 下个排程点会看到点亮；这里不因「尚未聚合」把签到判成失败。
-	if _, litAfter, errRe := c.GrowthHeatmapToday(ctx, cred); errRe == nil {
-		lit = litAfter
+	// 热力图聚合滞后数秒，立即回读可能仍未点亮；当天状态以本条上报为准，
+	// 下个排程点会看到点亮，这里不因「尚未聚合」把签到判成失败。
+	streak := c.streakDays(ctx, cred)
+	message := "活跃信标已上报，奖励积分次日凌晨发放"
+	if streak > 0 {
+		message = fmt.Sprintf("活跃信标已上报（已连续点亮 %d 天），奖励积分次日凌晨发放", streak)
 	}
-	streak := consecutiveLitDays(lit, todayKey)
-	if streak == 0 {
-		// 聚合滞后时回读可能仍看不到今天：本轮上报已经成功，天数按
-		// 「至少今天这一天」计，不能让页面显示 0 天。
-		streak = 1
-	}
-	return &CheckinResult{
-		Streak:  int64(streak),
-		Message: fmt.Sprintf("活跃信标已上报（已连续点亮 %d 天），奖励积分次日凌晨发放", streak),
-	}, nil
+	return &CheckinResult{Streak: streak, Message: message}, nil
 }
 
-// consecutiveLitDays 计算截至 today 的连续点亮天数。
+// streakDays 读上游的连续登录天数；查不到时返回 0（表示「上游没提供」）。
 //
-// 热力图给的是「点亮过的日期集合」，不是连签计数：日期总和（len）在断签
-// 之后依然很大，拿它当「连续点亮」会显示一个只增不减的假数字（历史 bug）。
-// 口径：从 today 往前数连续点亮的日子；today 还没点亮时从昨天往前数——
-// 今天尚未点亮只代表「今天还没点」，不代表连签已断。
-func consecutiveLitDays(lit []string, today string) int {
-	if len(lit) == 0 {
+// 不从热力图推算：断签、补签、跨月重置的规则都在上游，本地按「点亮日期集合」
+// 数出来的连续天数必然分叉（历史 bug 就是拿 len(lit) 当连续天数，只增不减）。
+// 返回 0 时上层会保留上一次的值，而不是把已有天数清成 0。
+func (c *Client) streakDays(ctx context.Context, cred *Credential) int64 {
+	streak, errStreak := c.GrowthStreak(ctx, cred)
+	if errStreak != nil || streak == nil || streak.Days <= 0 {
 		return 0
 	}
-	seen := make(map[string]struct{}, len(lit))
-	for _, item := range lit {
-		if trimmed := strings.TrimSpace(item); trimmed != "" {
-			seen[trimmed] = struct{}{}
-		}
-	}
-	day, errParse := time.ParseInLocation("2006-01-02", strings.TrimSpace(today), cstZone)
-	if errParse != nil {
-		return 0
-	}
-	if _, okToday := seen[day.Format("2006-01-02")]; !okToday {
-		day = day.AddDate(0, 0, -1)
-	}
-	streak := 0
-	// 上界是集合大小：集合里不可能有超过它长度的连续日期。
-	for streak <= len(seen) {
-		if _, ok := seen[day.Format("2006-01-02")]; !ok {
-			break
-		}
-		streak++
-		day = day.AddDate(0, 0, -1)
-	}
-	return streak
+	return streak.Days
 }
 
 // heatmapLitOn 报告热力图是否包含指定日期的点亮记录。

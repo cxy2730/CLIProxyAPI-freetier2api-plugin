@@ -589,6 +589,32 @@ func TestSanitizeCoversSystemMessage(t *testing.T) {
 	}
 }
 
+// TestSanitizeKeepsLineStructure 验证净化只替换指纹字面量，不破坏正文的行结构。
+//
+// 剥离型正则以 \s* 结尾（吃掉键值后面的空白）；正则一旦写宽就会把换行一起
+// 吞掉，system prompt 变成一整行——模型行为会变，而且几乎无法归因。
+func TestSanitizeKeepsLineStructure(t *testing.T) {
+	rules, regexes := loadSanitizeRules()
+	if len(rules.Features) == 0 {
+		t.Skip("sanitize rules are not embedded")
+	}
+	lines := []string{
+		"You are an AI agent powered by DeepSeek Harness.",
+		"Tokens prefixed with @ are paths the user referenced.",
+		"",
+		"    indented code block",
+		"tail",
+	}
+	input := strings.Join(lines, "\n")
+	output := sanitizeText(input, rules, regexes)
+	if got, want := strings.Count(output, "\n"), strings.Count(input, "\n"); got != want {
+		t.Fatalf("净化改变了行结构：换行 %d -> %d\n%q", want, got, output)
+	}
+	if !strings.Contains(output, "    indented code block") {
+		t.Fatalf("缩进被破坏：%q", output)
+	}
+}
+
 // TestSanitizeLeavesPlainTextWithZeroWidthAlone 验证未命中特征的正文不做字符级改动。
 //
 // 零宽字符清理只在指纹预检命中后执行；普通用户消息（哪怕带零宽字符）必须原样透传。

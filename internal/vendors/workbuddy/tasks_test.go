@@ -574,3 +574,71 @@ func TestBuildQuotaResponsePersonalDescription(t *testing.T) {
 		t.Fatalf("description = %q, want 400 / 1000", got)
 	}
 }
+
+// TestGlobalDailyBonusUsesUpstreamStreak 锁定国际版每日活跃奖励的连签口径。
+//
+// 天数必须来自上游连登接口：本地按热力图推算在断签/补签后必然分叉（历史
+// bug 就是拿 len(lit) 当连签，只增不减）。上游没给时返回 0，让上层保留旧值，
+// 而不是猜一个「至少今天 1 天」。
+func TestGlobalDailyBonusUsesUpstreamStreak(t *testing.T) {
+	today := time.Now().In(cstZone).Format("2006-01-02")
+	cases := []struct {
+		name        string
+		heatmap     string
+		streakBody  string
+		streakFails bool
+		wantAlready bool
+		wantStreak  int64
+		wantBeacon  int
+	}{
+		{
+			name:       "今日未点亮：上报信标并透传上游天数",
+			heatmap:    `{"code":0,"data":{"cells":[{"date":"2020-01-01","score":1}]}}`,
+			streakBody: `{"code":0,"data":{"streak":{"days":7}}}`,
+			wantStreak: 7, wantBeacon: 1,
+		},
+		{
+			name:        "连登接口失败：返回 0，不猜 1",
+			heatmap:     `{"code":0,"data":{"cells":[{"date":"2020-01-01","score":1}]}}`,
+			streakFails: true,
+			wantStreak:  0, wantBeacon: 1,
+		},
+		{
+			name:        "今日已点亮：不重复上报",
+			heatmap:     `{"code":0,"data":{"cells":[{"date":"` + today + `","score":1}]}}`,
+			streakBody:  `{"code":0,"data":{"streak":{"days":3}}}`,
+			wantAlready: true, wantStreak: 3, wantBeacon: 0,
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			beacons := 0
+			installHostHTTP(t, func(_, rawURL string) (int, string) {
+				switch {
+				case strings.Contains(rawURL, "/activity/growth/heatmap"):
+					return http.StatusOK, testCase.heatmap
+				case strings.Contains(rawURL, "/activity/growth/streak"):
+					if testCase.streakFails {
+						return http.StatusInternalServerError, `{"code":500,"message":"boom"}`
+					}
+					return http.StatusOK, testCase.streakBody
+				case strings.Contains(rawURL, reportPath):
+					beacons++
+					return http.StatusOK, `{"code":0}`
+				}
+				return http.StatusOK, `{}`
+			})
+			client := NewClient(newRuntime(core.Env{}), Options{Context: context.Background()})
+			result, errBonus := client.GlobalDailyBonus(context.Background(), testGlobalCredential("uid-streak"))
+			if errBonus != nil {
+				t.Fatalf("GlobalDailyBonus: %v", errBonus)
+			}
+			if result == nil || result.Already != testCase.wantAlready || result.Streak != testCase.wantStreak {
+				t.Fatalf("result = %+v, want already=%v streak=%d", result, testCase.wantAlready, testCase.wantStreak)
+			}
+			if beacons != testCase.wantBeacon {
+				t.Fatalf("信标上报 %d 次, want %d", beacons, testCase.wantBeacon)
+			}
+		})
+	}
+}
