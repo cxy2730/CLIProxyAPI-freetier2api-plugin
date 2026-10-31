@@ -63,7 +63,8 @@ func TestClaimUGClassifiesEachEndpoint(t *testing.T) {
 		EpUGCobrandClaim:     {200, `{"code":1001,"message":"该奖励已领取"}`},
 		EpUGWorkLotteryDraw:  {200, `{"code":2002,"message":"活动已结束"}`},
 		EpUGWorkFissionShare: {500, `{"code":5001,"message":"服务繁忙"}`},
-		EpUGCodeFissionShare: {200, `{"code":3003,"message":"参数错误"}`},
+		// 实测 shape：share_link 缺作品 ID 时回 4001「param is invalid」。
+		EpUGCodeFissionShare: {200, `{"code":4001,"message":"param is invalid"}`},
 	}
 	stubHost(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -99,7 +100,8 @@ func TestClaimUGClassifiesEachEndpoint(t *testing.T) {
 		"cobrand_claim":      UGAlready,
 		"work_lottery_draw":  UGUnavailable,
 		"work_fission_share": UGFailed,
-		"code_fission_share": UGFailed,
+		// 缺参数属「拿不到、重试也没用」，不是上游故障。
+		"code_fission_share": UGUnavailable,
 	}
 	for _, result := range results {
 		status, known := want[result.Key]
@@ -237,7 +239,9 @@ func TestClassifyUGMessage(t *testing.T) {
 		{"活动已结束", UGUnavailable},
 		{"活动未开始", UGUnavailable},
 		{"当前账号不满足参与条件", UGUnavailable},
-		{"参数错误", UGFailed},
+		{"活动暂不可用", UGUnavailable},
+		{"param is invalid", UGUnavailable},
+		{"参数错误", UGUnavailable},
 		{"", UGFailed},
 	}
 	for _, item := range cases {
@@ -286,5 +290,95 @@ func TestRunScheduledRejectsUnknownKind(t *testing.T) {
 	cn := &adapter{config: ConfigFor(RegionCN)}
 	if _, errRun := cn.RunScheduled(context.Background(), nil, "workbuddy_dailybonus"); errRun == nil {
 		t.Fatal("未知任务族应报错")
+	}
+}
+
+// TestClaimUGReadsNoCodeState 锁住「无业务码响应按状态字段归类」。
+//
+// 实测 claim_package 回 {"eligible":false,...}：没有 code。按 code==nil 一律
+// 归失败，会把「当前账号不满足条件」报成上游故障，用户只能看到一串无意义的
+// 失败横幅。
+func TestClaimUGReadsNoCodeState(t *testing.T) {
+	cases := []struct {
+		name   string
+		body   string
+		status UGStatus
+	}{
+		{"资格不足-顶层", `{"eligible":false,"message":"no quota"}`, UGUnavailable},
+		{"资格不足-嵌套", `{"data":{"eligible":false}}`, UGUnavailable},
+		{"本次已发放", `{"eligible":true,"newly_granted":true}`, UGClaimed},
+		{"可参与但未发放", `{"eligible":true,"newly_granted":false}`, UGUnavailable},
+	}
+	for _, item := range cases {
+		stubHost(t)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(item.body))
+		}))
+		results, errClaim := ClaimUG(context.Background(), ugTestCredential(), ugTestConfig(t, server.URL))
+		server.Close()
+		if errClaim != nil {
+			t.Fatalf("%s: 不该中止整轮: %v", item.name, errClaim)
+		}
+		for _, result := range results {
+			if result.Status != item.status {
+				t.Fatalf("%s: %s status = %d, 期望 %d", item.name, result.Key, result.Status, item.status)
+			}
+			if strings.TrimSpace(result.Message) == "" {
+				t.Fatalf("%s: %s 必须带原因", item.name, result.Key)
+			}
+		}
+	}
+}
+
+// TestClaimUGClassifiesMissingParamOnNon200 锁住「非 200 的缺参数也归暂不可领」。
+//
+// 实测 cobrand/claim 缺 activity_id 回 400 + code 9080「param is invalid」。
+func TestClaimUGClassifiesMissingParamOnNon200(t *testing.T) {
+	stubHost(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"code":9080,"message":"param is invalid"}`))
+	}))
+	defer server.Close()
+
+	results, errClaim := ClaimUG(context.Background(), ugTestCredential(), ugTestConfig(t, server.URL))
+	if errClaim != nil {
+		t.Fatalf("400 不该中止整轮: %v", errClaim)
+	}
+	for _, result := range results {
+		if result.Status != UGUnavailable {
+			t.Fatalf("%s status = %d, 期望 UGUnavailable（文案 %q）", result.Key, result.Status, result.Message)
+		}
+		if result.Code != 9080 {
+			t.Errorf("%s code = %d, 期望原样带出 9080", result.Key, result.Code)
+		}
+	}
+}
+
+// TestReadUGState 验证：没有状态字段时必须退回失败归类，不能被当成可领取。
+func TestReadUGState(t *testing.T) {
+	for _, body := range []string{`{"data":{}}`, `<html>502</html>`, `{}`, `null`} {
+		if _, okState := readUGState([]byte(body)); okState {
+			t.Errorf("body=%q: 不该识别出状态字段", body)
+		}
+	}
+}
+
+// TestUGDetailText 验证：机器文案翻成中文提示，认不出的原样返回。
+func TestUGDetailText(t *testing.T) {
+	cases := map[string]string{
+		"param is invalid": "上游要求活动/作品参数，插件无法自动获取",
+		"参数缺失":             "上游要求活动/作品参数，插件无法自动获取",
+		"活动暂不可用":           "活动暂不可用",
+		"HTTP 500 服务繁忙":    "HTTP 500 服务繁忙",
+	}
+	for message, want := range cases {
+		if got := ugDetailText(message); got != want {
+			t.Errorf("ugDetailText(%q) = %q, 期望 %q", message, got, want)
+		}
+	}
+	if got := (UGResult{Label: "作品抽奖", Status: UGUnavailable, Message: "param is invalid"}).Describe(); !strings.Contains(got, "上游要求活动/作品参数") {
+		t.Errorf("Describe 未翻译缺参文案: %s", got)
 	}
 }

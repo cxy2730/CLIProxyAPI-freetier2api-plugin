@@ -154,7 +154,10 @@ const (
 	RegisterPath = "/auth/register"
 
 	// DefaultClientVersion 是伪装用的 Cline 客户端版本。
-	DefaultClientVersion = "3.0.74"
+	//
+	// 2026-10-31 对齐官方最新正式版（github.com/cline/cline releases/latest
+	// = v4.1.26，原值 3.0.74 已落后两个大版本）。
+	DefaultClientVersion = "4.1.26"
 	// DefaultCoreVersion 是伪装用的 Cline 内核版本。
 	DefaultCoreVersion = "0.0.66"
 )

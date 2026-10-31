@@ -44,8 +44,12 @@ const (
 	AuthorizePath   = "/code/authorize"
 	// DefaultConfigName 是上游默认对话模型（v1.1.0 抓包：目录 default_model）。
 	DefaultConfigName = "raccoon-8c4485"
-	// DefaultClientVersion 是出站 x-client-version 头的内置值（抓包实测）。
-	DefaultClientVersion = "v1.1.0"
+	// DefaultClientVersion 是出站 x-client-version 头的内置值。
+	//
+	// 2026-10-31 官方下载页（xiaohuanxiong.com/download）当前发布版本：
+	// macOS / Windows 1.1.3、Linux 1.0.38。这里的平台头声明的是
+	// desktop-windows-x64，因此对齐 Windows 的 1.1.3（原值 v1.1.0 已落后）。
+	DefaultClientVersion = "v1.1.3"
 )
 
 // chatHTTPTimeout 是非流式对话的上限。
@@ -76,7 +80,11 @@ func ApplyClientHeaders(req *http.Request) {
 const grantClientPlatform = "desktop-windows"
 
 // grantClientVersion 是登录奖励接口使用的客户端版本（带 v 前缀）。
-const grantClientVersion = "v1.0.38"
+//
+// 与 grantClientPlatform 保持一致：平台头声明 desktop-windows，版本就取
+// Windows 客户端的当前发布版本 1.1.3（原值 v1.0.38 对应的是 Linux 构建，
+// 与平台头不匹配）。
+const grantClientVersion = "v1.1.3"
 
 // ApplyGrantHeaders 写入登录奖励接口的客户端识别头。
 //
