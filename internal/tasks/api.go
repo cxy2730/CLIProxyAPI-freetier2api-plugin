@@ -114,7 +114,14 @@ func (s *Service) RunAuto(ctx context.Context, callbackID, identifier, code stri
 }
 
 // RunAutoAll 对指定账号（targets 为空表示全部）依次执行一键完成。
+//
+// 这是同步版本，只给测试与内部调用；管理接口走后台任务（见 StartAutoAll）。
 func (s *Service) RunAutoAll(ctx context.Context, callbackID string, targets []string) map[string]any {
+	return s.runAutoAllTargets(ctx, callbackID, targets, nil)
+}
+
+// runAutoAllTargets 串行跑完目标账号，onProgress 在每个账号开始前回报进度。
+func (s *Service) runAutoAllTargets(ctx context.Context, callbackID string, targets []string, onProgress func(done, total int)) map[string]any {
 	loaded := s.collectAccounts(ctx, callbackID, targets)
 	if len(loaded) == 0 {
 		return map[string]any{"ok": true, "accounts": 0, "message": "没有可用账号"}
@@ -127,7 +134,14 @@ func (s *Service) RunAutoAll(ctx context.Context, callbackID string, targets []s
 		Results []autoAllResult `json:"results,omitempty"`
 	}
 	out := make([]accountResult, 0, len(loaded))
-	for _, account := range loaded {
+	for index, account := range loaded {
+		// 关停时 ctx 会先被取消：不要在卸载插件的路上再起一次上游请求。
+		if ctx.Err() != nil {
+			break
+		}
+		if onProgress != nil {
+			onProgress(index, len(loaded))
+		}
 		entry := accountResult{Label: account.label(), UID: account.uid(), Realm: account.vendor.Region()}
 		if _, okRunner := core.As[core.TaskRunner](account.vendor); !okRunner {
 			entry.Skipped = "该供应商没有可自动执行的任务"

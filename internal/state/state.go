@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"freetier2api-plugin/cpasdk/pluginapi"
 	"freetier2api-plugin/internal/core"
@@ -137,6 +138,12 @@ type State struct {
 	Checkin map[string]CheckinRecord `json:"checkin,omitempty"`
 	// CheckinHistory 按 CheckinHistoryKey 保存每个账号最近的签到执行记录（新→旧）。
 	CheckinHistory map[string][]CheckinHistoryEntry `json:"checkin_history,omitempty"`
+	// DailyBonusSent 按 CheckinHistoryKey 记录最近一次「已上报每日活跃信标」的日期。
+	//
+	// 国际版签到走的是每日活跃信标：上游按天幂等，但热力图是异步聚合的，
+	// 同一天的第二个排程点读到的热力图可能还没亮，于是重复上报把当天计数
+	// 翻倍（2 → 4）。上游没有可查的幂等键，只能在这里记一笔本地凭据。
+	DailyBonusSent map[string]string `json:"daily_bonus_sent,omitempty"`
 	// Tasks 按「uid\x1f任务码」记录任务执行历史。
 	Tasks map[string]TaskRecord `json:"tasks,omitempty"`
 	// Claim 按账号 FileID 记录套餐领取状态（额度查询时顺带刷新）。
@@ -148,6 +155,9 @@ type Store struct {
 	mu    sync.Mutex
 	dir   string
 	cache *State
+	// dirty 表示内存状态比磁盘新；flushing 表示已有一个写盘任务在排队。
+	dirty    bool
+	flushing bool
 }
 
 // NewStore 创建一个尚未绑定目录的 Store。
@@ -166,6 +176,7 @@ func New() *State {
 		Version:        Version,
 		Checkin:        map[string]CheckinRecord{},
 		CheckinHistory: map[string][]CheckinHistoryEntry{},
+		DailyBonusSent: map[string]string{},
 		Tasks:          map[string]TaskRecord{},
 		Claim:          map[string]ClaimRecord{},
 		ModelAliases:   map[string]string{},
@@ -181,6 +192,7 @@ func (s *Store) Load() (*State, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.dirty = false
 	path := s.pathLocked()
 	raw, errRead := os.ReadFile(path)
 	if errRead != nil {
@@ -193,7 +205,10 @@ func (s *Store) Load() (*State, error) {
 	var loaded State
 	if errUnmarshal := json.Unmarshal(raw, &loaded); errUnmarshal != nil {
 		// 状态损坏不阻止插件启动：宁可丢掉签到记录，也不要让用户无法使用。
-		logger.Error("state file %s is corrupt, starting with empty state: %v", path, errUnmarshal)
+		// 但损坏的文件不能就地覆盖——它是唯一可能被手工救回的东西，
+		// 改名留存，下一次写入才不会把它抹掉。
+		quarantined := quarantine(path)
+		logger.Error("state file %s is corrupt, quarantined as %s, starting with empty state: %v", path, quarantined, errUnmarshal)
 		s.cache = New()
 		return s.cache, nil
 	}
@@ -235,6 +250,9 @@ func normalize(state *State) {
 	}
 	if state.CheckinHistory == nil {
 		state.CheckinHistory = map[string][]CheckinHistoryEntry{}
+	}
+	if state.DailyBonusSent == nil {
+		state.DailyBonusSent = map[string]string{}
 	}
 	if state.Tasks == nil {
 		state.Tasks = map[string]TaskRecord{}
@@ -290,6 +308,10 @@ func clone(state *State) State {
 	for key, history := range state.CheckinHistory {
 		out.CheckinHistory[key] = append([]CheckinHistoryEntry(nil), history...)
 	}
+	out.DailyBonusSent = make(map[string]string, len(state.DailyBonusSent))
+	for key, date := range state.DailyBonusSent {
+		out.DailyBonusSent[key] = date
+	}
 	out.Tasks = make(map[string]TaskRecord, len(state.Tasks))
 	for key, value := range state.Tasks {
 		out.Tasks[key] = value
@@ -309,20 +331,52 @@ func clone(state *State) State {
 	return out
 }
 
-// Mutate 在锁内修改状态并立即落盘。
+// saveDelay 是合并写盘的窗口。
+//
+// 一次任务轮询里每个账号都要落一次状态，每次都整份重写 state.json（含模型
+// 缓存）会把磁盘 IO 放大到账号数倍。合并到一个短窗口里写一次即可；代价是
+// 进程被强杀时最多丢掉窗口内的改动（签到记录 / 模型缓存，都可重建）。
+const saveDelay = 200 * time.Millisecond
+
+// Mutate 在锁内修改状态，并安排一次落盘。
 //
 // 修改函数不应做 IO（它在锁内执行）；落盘失败只记日志，不让调用方失败——
 // 状态写不进去不应该让一次签到或一次对话失败。
+//
+// 写盘在窗口末尾由后台完成（见 saveDelay），连续多次 Mutate 只写一次。
 func (s *Store) Mutate(mutate func(*State)) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.cache == nil {
 		s.cache = New()
 	}
 	mutate(s.cache)
-	if errSave := s.saveLocked(); errSave != nil {
-		logger.Error("save state failed: %v", errSave)
+	s.dirty = true
+	schedule := !s.flushing
+	if schedule {
+		s.flushing = true
 	}
+	s.mu.Unlock()
+	if schedule {
+		time.AfterFunc(saveDelay, s.flush)
+	}
+}
+
+// Flush 立即把未落盘的修改写入磁盘（关停路径与测试用）。
+func (s *Store) Flush() { s.flush() }
+
+func (s *Store) flush() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.flushing = false
+	if !s.dirty {
+		return
+	}
+	if errSave := s.saveLocked(); errSave != nil {
+		// 保留 dirty：下一次 Mutate 或 Flush 会再试一次。
+		logger.Error("save state failed: %v", errSave)
+		return
+	}
+	s.dirty = false
 }
 
 // saveLocked 原子写入状态文件。调用方必须持有 s.mu。
@@ -337,9 +391,27 @@ func (s *Store) saveLocked() error {
 	}
 	path := s.pathLocked()
 	tmp := path + ".tmp"
-	if errWrite := os.WriteFile(tmp, raw, 0o600); errWrite != nil {
+	file, errCreate := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if errCreate != nil {
+		return fmt.Errorf("write state: %w", errCreate)
+	}
+	if _, errWrite := file.Write(raw); errWrite != nil {
+		_ = file.Close()
+		_ = os.Remove(tmp)
 		return fmt.Errorf("write state: %w", errWrite)
 	}
+	// 落盘前 fsync：否则掉电后可能留下一个长度对、内容全零的 state.json，
+	// 下次启动只能按损坏处理，签到历史整份丢失。
+	if errSync := file.Sync(); errSync != nil {
+		_ = file.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("sync state: %w", errSync)
+	}
+	if errClose := file.Close(); errClose != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("close state: %w", errClose)
+	}
+	backup(path)
 	if errRename := os.Rename(tmp, path); errRename != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("replace state file: %w", errRename)
@@ -347,9 +419,43 @@ func (s *Store) saveLocked() error {
 	return nil
 }
 
+// backup 把当前状态文件留一份 .bak，供 JSON 被写坏时手工救回。
+//
+// 优先硬链接（零拷贝，rename 之后旧 inode 仍然完整）；不支持硬链接的
+// 文件系统退回复制。备份失败不影响主流程。
+func backup(path string) {
+	bak := path + ".bak"
+	if _, errStat := os.Stat(path); errStat != nil {
+		return
+	}
+	_ = os.Remove(bak)
+	if errLink := os.Link(path, bak); errLink == nil {
+		return
+	}
+	raw, errRead := os.ReadFile(path)
+	if errRead != nil {
+		return
+	}
+	if errWrite := os.WriteFile(bak, raw, 0o600); errWrite != nil {
+		logger.Error("backup state failed: %v", errWrite)
+	}
+}
+
+// quarantine 把损坏的状态文件改名留存，返回新路径（失败时返回空串）。
+func quarantine(path string) string {
+	target := fmt.Sprintf("%s.corrupt-%s", path, time.Now().Format("20060102-150405"))
+	if errRename := os.Rename(path, target); errRename != nil {
+		logger.Error("quarantine corrupt state failed: %v", errRename)
+		return ""
+	}
+	return target
+}
+
 // Reset 清空内存缓存（测试用）。
 func (s *Store) Reset() {
 	s.mu.Lock()
 	s.cache = nil
+	s.dirty = false
+	s.flushing = false
 	s.mu.Unlock()
 }

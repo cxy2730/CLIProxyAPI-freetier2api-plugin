@@ -43,6 +43,32 @@ func (s *Service) Checkin(ctx context.Context, vendor core.Vendor, credential *c
 	if !okProvider {
 		return nil, fmt.Errorf("本供应商不提供签到")
 	}
+	if credential == nil {
+		return nil, fmt.Errorf("账号不存在")
+	}
+	// 签到与任务族共用同一把账号锁（键是 FileID，见 accountContext.uid）：
+	// 签到请求打上游的同时，开学季 / 连登也在同一账号上跑，上游按
+	// 「同账号并发会话」判风控，会随机回 429 或直接判失败。锁不上就让
+	// 调用方稍后再试，不硬闯。
+	uid := credential.FileIDValue()
+	if !s.tryLockAccount(uid) {
+		return nil, fmt.Errorf("该账号正在执行其它任务，请稍后再试")
+	}
+	defer s.unlockAccount(uid)
+
+	beacon := dailyBeacon(vendor)
+	if beacon && s.dailyBeaconSentToday(vendor, credential) {
+		// 上游热力图是异步聚合的，同一天的第二个排程点读到的可能还是没亮，
+		// 再上报一次就会把当天计数翻倍。本地已记录过就跳过。
+		result := &core.CheckinResult{
+			Already: true,
+			Message: "今日活跃信标已上报过（本地记录），跳过重复上报",
+			Streak:  s.lastStreak(credential),
+		}
+		s.recordCheckinResult(vendor, credential, trigger, result)
+		return result, nil
+	}
+
 	result, errCheckin := provider.Checkin(ctx, credential)
 	if errCheckin != nil {
 		s.recordCheckinFailure(vendor, credential, trigger, errCheckin.Error())
@@ -54,6 +80,26 @@ func (s *Service) Checkin(ctx context.Context, vendor core.Vendor, credential *c
 	}
 	s.recordCheckinResult(vendor, credential, trigger, result)
 	return result, nil
+}
+
+// dailyBeacon 报告该供应商当前是否走每日活跃信标签到。
+func dailyBeacon(vendor core.Vendor) bool {
+	beacon, okBeacon := core.As[core.DailyBeaconVendor](vendor)
+	return okBeacon && beacon.CheckinUsesDailyBeacon()
+}
+
+// dailyBeaconSentToday 报告本地是否已记录今天上报过活跃信标。
+func (s *Service) dailyBeaconSentToday(vendor core.Vendor, credential *core.Credential) bool {
+	key := checkinHistoryKey(vendor, credential)
+	if key == "" {
+		return false
+	}
+	return s.deps.State().DailyBonusSent[key] == s.todayString()
+}
+
+// lastStreak 读上一次记录的连签天数（本地去重命中时沿用它，页面才不会显示 0）。
+func (s *Service) lastStreak(credential *core.Credential) int64 {
+	return s.deps.State().Checkin[credential.FileIDValue()].Streak
 }
 
 // checkinResultStatus 把供应商结果映射成历史状态。
@@ -84,6 +130,8 @@ func (s *Service) recordCheckinResult(vendor core.Vendor, credential *core.Crede
 	entry := s.checkinEntry(trigger, checkinResultStatus(result), result.Message, result.Credit)
 	today := s.todayString()
 	limit := s.checkinHistoryLimit()
+	// 活跃信标按天幂等：本地记一笔「今天报过了」，供后续排程点去重。
+	beacon := dailyBeacon(vendor)
 	s.deps.MutateState(func(current *state.State) {
 		// 供应商显式声明「本次未完成今日签到」时不更新「最近一次」：把
 		// 「上游窗口未开启」之类的状态记成今日已签到，会让页面显示假性成功，
@@ -103,6 +151,13 @@ func (s *Service) recordCheckinResult(vendor core.Vendor, credential *core.Crede
 				record.Streak = result.Streak
 			}
 			current.Checkin[uid] = record
+			// 活跃信标按天幂等，本地记一笔「今天报过了」，供后续排程点去重。
+			if beacon {
+				if current.DailyBonusSent == nil {
+					current.DailyBonusSent = map[string]string{}
+				}
+				current.DailyBonusSent[key] = today
+			}
 		}
 		pushCheckinHistory(current, key, entry, limit)
 	})

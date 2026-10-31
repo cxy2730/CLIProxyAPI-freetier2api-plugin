@@ -153,10 +153,18 @@ func (s *Service) schedulerStatus() map[string]any {
 	for kind, hours := range schedule {
 		readable[kind] = hours
 	}
+	// 页面上直接显示「下次执行」的时刻，不要贴 RFC3339：面板用户看到的应该是
+	// 「10:00」而不是「2026-10-31T10:00:00+08:00」。跨天时补上日期。
+	now := s.deps.Now()
+	nextLabel := next.Format("15:04")
+	if next.Format("2006-01-02") != now.Format("2006-01-02") {
+		nextLabel = next.Format("01-02 15:04")
+	}
 	return map[string]any{
 		"running":    running,
 		"schedule":   readable,
 		"next_at":    next.Format(time.RFC3339),
+		"next_hhmm":  nextLabel,
 		"next_tasks": kinds,
 		"auto_tasks": s.effectiveAutoTasks(),
 		"task_specs": s.catalog.Specs(),
@@ -344,6 +352,9 @@ func (s *Service) tryLockAccount(uid string) bool {
 		return false
 	}
 	s.taskLockMu.Lock()
+	if s.taskLocks == nil {
+		s.taskLocks = map[string]*sync.Mutex{}
+	}
 	lock, okLock := s.taskLocks[trimmed]
 	if !okLock {
 		lock = &sync.Mutex{}
@@ -359,6 +370,9 @@ func (s *Service) unlockAccount(uid string) {
 		return
 	}
 	s.taskLockMu.Lock()
+	if s.taskLocks == nil {
+		s.taskLocks = map[string]*sync.Mutex{}
+	}
 	lock, okLock := s.taskLocks[trimmed]
 	s.taskLockMu.Unlock()
 	if okLock {
@@ -709,24 +723,39 @@ func (s *Service) collectAccounts(ctx context.Context, callbackID string, target
 }
 
 // findAccount 按标识查找账号（支持 auth_id / uid / auth_index）。
+//
+// Label 是展示名（昵称 / 邮箱），跨账号并不唯一：把它当成 ID 兜底会让
+// 「删除账号」这类破坏性动作打到同名的另一个账号上。因此 Label 只在
+// 全局唯一命中时才算数，命中多个就当找不到。
 func (s *Service) findAccount(ctx context.Context, callbackID, identifier string) *accountContext {
 	trimmed := strings.TrimSpace(identifier)
 	if trimmed == "" {
 		return nil
 	}
-	var found *accountContext
-	s.forEachAccount(ctx, callbackID, nil, func(_ context.Context, account *accountContext) error {
-		if found != nil {
-			return nil
+	return pickAccount(s.collectAccounts(ctx, callbackID, nil), trimmed)
+}
+
+// pickAccount 从候选账号里按标识挑一个。
+func pickAccount(candidates []*accountContext, identifier string) *accountContext {
+	var labelMatch *accountContext
+	labelHits := 0
+	for _, account := range candidates {
+		if account == nil {
+			continue
 		}
-		if account.uid() == trimmed || account.entry.ID == trimmed ||
-			account.entry.Name == trimmed || account.entry.AuthIndex == trimmed ||
-			account.entry.Label == trimmed {
-			found = account
+		if account.uid() == identifier || account.entry.ID == identifier ||
+			account.entry.Name == identifier || account.entry.AuthIndex == identifier {
+			return account
 		}
-		return nil
-	})
-	return found
+		if account.entry.Label == identifier {
+			labelMatch = account
+			labelHits++
+		}
+	}
+	if labelHits == 1 {
+		return labelMatch
+	}
+	return nil
 }
 
 // activityStatusForAccounts 返回各账号的活动任务状态（供管理页展示）。

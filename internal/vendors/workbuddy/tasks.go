@@ -2213,7 +2213,9 @@ func makeupYesterday(ctx context.Context, client *Client, credential *Credential
 	if errStreak != nil || streak.MakeupCards <= 0 {
 		return ""
 	}
-	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	// 上游按 UTC+8 划分自然日：宿主机时区不是东八区时，这里直接取本地时间
+	// 会补错一天（补成前天或今天），所以显式换算。
+	yesterday := time.Now().In(cstZone).AddDate(0, 0, -1).Format("2006-01-02")
 	if errUse := client.UseMakeupCard(ctx, credential, yesterday); errUse != nil {
 		return ""
 	}

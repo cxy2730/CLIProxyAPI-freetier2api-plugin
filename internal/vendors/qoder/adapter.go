@@ -237,7 +237,7 @@ func (v *adapter) ExecuteStream(ctx context.Context, cred *core.Credential, req 
 	if errBridge != nil {
 		return errBridge
 	}
-	return StreamChatCompletions(b, req.Payload, sink.Emit)
+	return StreamChatCompletions(ctx, b, req.Payload, sink.Emit)
 }
 
 // ---- 额度与签到 ----
