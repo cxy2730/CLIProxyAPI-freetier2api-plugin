@@ -276,6 +276,7 @@ func (v *adapter) Checkin(ctx context.Context, cred *core.Credential) (*core.Che
 		// CheckinWindowNotOpen（窗口未开启），不会走到这里。
 		Already:     result.Status == CheckinAlreadyClaimed,
 		Credit:      int64(result.Amount),
+		Streak:      int64(result.StreakDays),
 		Message:     result.Message,
 		NotRecorded: result.NotRecorded,
 	}, nil

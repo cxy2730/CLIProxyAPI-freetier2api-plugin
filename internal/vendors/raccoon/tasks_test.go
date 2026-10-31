@@ -20,8 +20,8 @@ func TestApplyGrantHeadersUsesDesktopEnum(t *testing.T) {
 	if got := req.Header.Get("X-Client-Platform"); got != "desktop-windows" {
 		t.Errorf("X-Client-Platform = %q, want desktop-windows", got)
 	}
-	if got := req.Header.Get("X-Client-Version"); got != "v1.0.35" {
-		t.Errorf("X-Client-Version = %q, want v1.0.35", got)
+	if got := req.Header.Get("X-Client-Version"); got != "v1.0.38" {
+		t.Errorf("X-Client-Version = %q, want v1.0.38", got)
 	}
 	if got := req.Header.Get("X-Org-Code"); got != "org-1" {
 		t.Errorf("X-Org-Code = %q, want org-1", got)

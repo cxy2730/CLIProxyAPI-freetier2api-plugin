@@ -49,7 +49,7 @@ func TestChatHeadersMatchGenuineClient(t *testing.T) {
 
 	// 归属与版本。
 	ua := req.Header.Get("User-Agent")
-	if ua != "WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0" {
+	if ua != "WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.179.0" {
 		t.Fatalf("User-Agent = %q", ua)
 	}
 	for key, want := range map[string]string{

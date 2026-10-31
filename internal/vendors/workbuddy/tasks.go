@@ -1105,7 +1105,7 @@ func (c *Client) ReportChatActivity(ctx context.Context, cred *Credential, conve
 		"isPlan":           false, "isAutoExecuteTerminal": false, "isAutoModify": false,
 		"codebaseEnable": false,
 		"maxToken":       0, "maxSteps": 0, "temperature": 0, "maxRetries": 0,
-		"mentionContexts": []any{}, "knowledgeId": "", "knowledgeName": "",
+		"mentionContexts": []any{}, "knowledgeId": knowledgeIDEmpty, "knowledgeName": knowledgeNameEmpty,
 		"codebaseId": "", "mentionContextCount": 0, "command": "",
 		"expertId": "", "recommendId": "", "skillId": "", "skillCount": 0,
 		"totalCount": 0, "fileUri": "", "presentAt": now,
@@ -1138,6 +1138,17 @@ func (c *Client) ReportWebElementClick(ctx context.Context, cred *Credential, pa
 	}
 	return c.ReportWebEvents(ctx, cred, pageURL, []map[string]any{event})
 }
+
+// chat_request_send 事件里「未挂知识库」的标准形态。
+//
+// 官方客户端抓包一律是空字符串（credential.go 的三条事件序列就是这么来的）；
+// 每日活跃信标最初手写成空数组，于是同一个 eventCode 出现了两种类型。上游目前
+// 两种都收，但任何一次 schema 收紧都只会打断其中一条路径，所以统一到抓包形态，
+// 并集中在这里，避免四处再各自分叉。
+const (
+	knowledgeIDEmpty   = ""
+	knowledgeNameEmpty = ""
+)
 
 // nowMs 返回当前毫秒时间戳。
 func nowMs() int64 { return time.Now().UnixMilli() }
@@ -2026,8 +2037,8 @@ func DailyBonusBeaconEvent(credential *Credential) map[string]any {
 		"requestModelId":       "deepseek-v4-flash",
 		"requestModelName":     "DeepSeek V4 Flash",
 		"mentionContexts":      []any{},
-		"knowledgeId":          []any{},
-		"knowledgeName":        []any{},
+		"knowledgeId":          knowledgeIDEmpty,
+		"knowledgeName":        knowledgeNameEmpty,
 		"presentAt":            now,
 		"rootRequestId":        conversationID,
 		"parentConversationId": conversationID,
@@ -2075,7 +2086,8 @@ func (c *Client) GlobalDailyBonus(ctx context.Context, cred *Credential) (*Check
 	// 必须按日期匹配「今天」，不能把最后一格当成今天：热力图顺序、
 	// 是否含今天都不是协议保证的。
 	if heatmapLitOn(lit, todayKey) {
-		return &CheckinResult{Already: true, Streak: int64(len(lit))}, nil
+		streak := int64(consecutiveLitDays(lit, todayKey))
+		return &CheckinResult{Already: true, Streak: streak}, nil
 	}
 	if errSend := c.SendDailyBonusBeacon(ctx, cred); errSend != nil {
 		return nil, fmt.Errorf("report: %w", errSend)
@@ -2085,10 +2097,51 @@ func (c *Client) GlobalDailyBonus(ctx context.Context, cred *Credential) (*Check
 	if _, litAfter, errRe := c.GrowthHeatmapToday(ctx, cred); errRe == nil {
 		lit = litAfter
 	}
+	streak := consecutiveLitDays(lit, todayKey)
+	if streak == 0 {
+		// 聚合滞后时回读可能仍看不到今天：本轮上报已经成功，天数按
+		// 「至少今天这一天」计，不能让页面显示 0 天。
+		streak = 1
+	}
 	return &CheckinResult{
-		Streak:  int64(len(lit)),
-		Message: fmt.Sprintf("活跃信标已上报（已连续点亮 %d 天），奖励积分次日凌晨发放", len(lit)),
+		Streak:  int64(streak),
+		Message: fmt.Sprintf("活跃信标已上报（已连续点亮 %d 天），奖励积分次日凌晨发放", streak),
 	}, nil
+}
+
+// consecutiveLitDays 计算截至 today 的连续点亮天数。
+//
+// 热力图给的是「点亮过的日期集合」，不是连签计数：日期总和（len）在断签
+// 之后依然很大，拿它当「连续点亮」会显示一个只增不减的假数字（历史 bug）。
+// 口径：从 today 往前数连续点亮的日子；today 还没点亮时从昨天往前数——
+// 今天尚未点亮只代表「今天还没点」，不代表连签已断。
+func consecutiveLitDays(lit []string, today string) int {
+	if len(lit) == 0 {
+		return 0
+	}
+	seen := make(map[string]struct{}, len(lit))
+	for _, item := range lit {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			seen[trimmed] = struct{}{}
+		}
+	}
+	day, errParse := time.ParseInLocation("2006-01-02", strings.TrimSpace(today), cstZone)
+	if errParse != nil {
+		return 0
+	}
+	if _, okToday := seen[day.Format("2006-01-02")]; !okToday {
+		day = day.AddDate(0, 0, -1)
+	}
+	streak := 0
+	// 上界是集合大小：集合里不可能有超过它长度的连续日期。
+	for streak <= len(seen) {
+		if _, ok := seen[day.Format("2006-01-02")]; !ok {
+			break
+		}
+		streak++
+		day = day.AddDate(0, 0, -1)
+	}
+	return streak
 }
 
 // heatmapLitOn 报告热力图是否包含指定日期的点亮记录。

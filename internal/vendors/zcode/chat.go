@@ -1266,7 +1266,7 @@ const (
 	//
 	// 上游按客户端版本判定兼容性（版本过旧会被拒），因此跟进官方升版时要
 	// 同步改这里。
-	ClientAppVersion = "3.16.2"
+	ClientAppVersion = "3.16.3"
 
 	// UserAgent 与 ClientAppVersion 同源，避免两者漂移。
 	UserAgent = "ZCode/" + ClientAppVersion

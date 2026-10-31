@@ -273,14 +273,59 @@ func (v *adapter) SubmitCallback(ctx context.Context, state, rawURL string) (*co
 
 func (v *adapter) SupportsCheckin() bool { return SupportsCheckin(v.profile()) }
 
+// ---- 任务族 ----
+
+// TaskKindUG 是「活动福利领取」任务族。
+const TaskKindUG = "trae_ug"
+
+// TaskSpecs 声明 Trae 家族自己的任务族。
+//
+// 只声明活动福利这一个族，且刻意不给 DefaultHours：6 个入口是活动期才开的
+// 领奖口，不是每天都有东西可领，默认排程只会每天白打 6 次空请求。需要时在
+// 控制台手动触发（或自己加排程）。国际版没有这套活动，故不声明。
+func (v *adapter) TaskSpecs() []core.TaskSpec {
+	if !v.SupportsCheckin() {
+		return nil
+	}
+	return []core.TaskSpec{{
+		Kind:        TaskKindUG,
+		Label:       "活动福利领取",
+		Description: "领取 Trae 国内版的竞赛 / 联合活动 / 抽奖 / 分享奖励；兑换码请在「兑换码」入口单独提交",
+		Manual:      true,
+	}}
+}
+
+// RunScheduled 执行本供应商声明的任务族。
+func (v *adapter) RunScheduled(ctx context.Context, cred *core.Credential, kind string) (string, error) {
+	if kind != TaskKindUG {
+		// 宿主的排程是全局的，别家的族走到这里说明宿主没过滤干净；按「无实现」返回。
+		return "", fmt.Errorf("trae: 不支持的任务族 %q", kind)
+	}
+	native, errNative := v.Native(cred)
+	if errNative != nil {
+		return "", errNative
+	}
+	results, errClaim := ClaimUG(ctx, native, v.profile())
+	if errClaim != nil {
+		if len(results) > 0 {
+			// 部分成功：把已拿到的结果一并带出，别让一次取消/凭证问题抹掉战果。
+			return SummarizeUG(results), core.ToPluginError(errClaim)
+		}
+		return "", core.ToPluginError(errClaim)
+	}
+	return SummarizeUG(results), nil
+}
+
 // 编译期断言：适配器实际具备的供应商能力。
 var (
-	_ core.Vendor            = (*adapter)(nil)
-	_ core.CallbackSubmitter = (*adapter)(nil)
-	_ core.CheckinProvider   = (*adapter)(nil)
-	_ core.Configurable      = (*adapter)(nil)
-	_ core.LoginProvider     = (*adapter)(nil)
-	_ core.LoginSessionOwner = (*adapter)(nil)
-	_ core.QuotaProvider     = (*adapter)(nil)
-	_ core.CreditsProvider   = (*adapter)(nil)
+	_ core.Vendor              = (*adapter)(nil)
+	_ core.CallbackSubmitter   = (*adapter)(nil)
+	_ core.CheckinProvider     = (*adapter)(nil)
+	_ core.Configurable        = (*adapter)(nil)
+	_ core.LoginProvider       = (*adapter)(nil)
+	_ core.LoginSessionOwner   = (*adapter)(nil)
+	_ core.QuotaProvider       = (*adapter)(nil)
+	_ core.CreditsProvider     = (*adapter)(nil)
+	_ core.TaskCatalogProvider = (*adapter)(nil)
+	_ core.ScheduledRunner     = (*adapter)(nil)
 )

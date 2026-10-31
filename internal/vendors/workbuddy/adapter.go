@@ -293,10 +293,12 @@ func (v *adapter) Checkin(ctx context.Context, cred *core.Credential) (*core.Che
 		if result.Already {
 			return &core.CheckinResult{
 				Already: true,
+				Streak:  result.Streak,
 				Message: fmt.Sprintf("今日活跃已点亮（已连续点亮 %d 天）", result.Streak),
 			}, nil
 		}
 		return &core.CheckinResult{
+			Streak: result.Streak,
 			Message: core.FirstNonEmpty(result.Message,
 				fmt.Sprintf("活跃信标已上报，今日已点亮（已连续点亮 %d 天），奖励积分次日凌晨发放", result.Streak)),
 		}, nil
@@ -315,6 +317,7 @@ func (v *adapter) Checkin(ctx context.Context, cred *core.Credential) (*core.Che
 		Already:     result.Already,
 		Credit:      result.Credit,
 		Energy:      result.Energy,
+		Streak:      result.Streak,
 		Message:     message,
 		NotRecorded: result.NotRecorded,
 	}, nil
