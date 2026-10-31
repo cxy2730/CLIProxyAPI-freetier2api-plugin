@@ -124,9 +124,3 @@ func TestMetricFloatAcceptsString(t *testing.T) {
 		t.Fatalf("core.FloatFromAny(nil) = %v", got)
 	}
 }
-func TestDescribeSnapErrorKeepsGatewayReason(t *testing.T) {
-	got := describeSnapError([]byte(`{"error_code":"APIG.0301","error_msg":"verify ak sk signature fail"}`))
-	if !strings.Contains(got, "APIG.0301") || !strings.Contains(got, "signature fail") {
-		t.Fatalf("describeSnapError = %q", got)
-	}
-}

@@ -624,7 +624,11 @@ func (s *Service) runForAccounts(
 			VendorID: current.Vendor.ID(),
 			Realm:    current.Credential.RegionValue(),
 		}
-		outcome, errAction := action(ctx, current.Vendor, current.Credential)
+		outcome, errAction := runWithAuthRetry(current.Credential, func() *core.Credential {
+			return s.refreshedCredential(ctx, callbackID, current.Entry, current.Vendor)
+		}, func(credential *core.Credential) (accountActionOutcome, error) {
+			return action(ctx, current.Vendor, credential)
+		})
 		if errAction != nil {
 			result.OK = false
 			result.Message = errAction.Error()
@@ -636,4 +640,18 @@ func (s *Service) runForAccounts(
 		return result
 	})
 	return append(results, jobResults...)
+}
+
+// runWithAuthRetry 在动作因凭证过期（401）失败时，刷新一次凭证再重试。
+//
+// CodeArts 的 STS security token 过期是**可续期**的：不刷新就重试，一键签到
+// 会一直报「token has expired」，用户只能自己去点 Token 续期。只认 401——
+// 403 / 参数错误刷新不会变好。刷新与重试逻辑见 withAuthRetry。
+func runWithAuthRetry(
+	credential *core.Credential,
+	refresh func() *core.Credential,
+	action func(*core.Credential) (accountActionOutcome, error),
+) (accountActionOutcome, error) {
+	outcome, _, errAction := withAuthRetry(credential, refresh, action)
+	return outcome, errAction
 }

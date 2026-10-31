@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -226,7 +227,18 @@ func signedSnapJSON(ctx context.Context, method, url string, cred *Credential, b
 
 	resp, errDo := hostbridge.Client(ctx, 20*time.Second).Do(req)
 	if errDo != nil {
-		return nil, fmt.Errorf("snap request failed: %w", errDo)
+		if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
+			// 取消/超时不是上游抖动：原样返回以保留 errors.Is 链，也不该进重试。
+			return nil, errDo
+		}
+		// 传输层失败归 transient：华为网关偶发直接断连（EOF），这类错误重查
+		// 通常就恢复，不能被当成账号或参数问题。
+		return nil, &core.Failure{
+			Kind:   core.FailureKindTransient,
+			Status: http.StatusBadGateway,
+			Code:   "codearts_snap_transport",
+			Msg:    "snap request failed: " + errDo.Error(),
+		}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -235,7 +247,9 @@ func signedSnapJSON(ctx context.Context, method, url string, cred *Credential, b
 		return nil, fmt.Errorf("read snap response: %w", errRead)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("snap response %d: %s", resp.StatusCode, describeSnapError(raw))
+		// 走统一分类：STS 过期的 400（APIG.0602）必须归成可续期的凭证错误，
+		// 宿主的保活重试才会先刷新再重查。
+		return nil, Classify(resp.StatusCode, string(raw))
 	}
 	var envelope map[string]any
 	if errDecode := json.Unmarshal(raw, &envelope); errDecode != nil {
@@ -252,19 +266,6 @@ func signedSnapJSON(ctx context.Context, method, url string, cred *Credential, b
 		return data, nil
 	}
 	return envelope, nil
-}
-
-// describeSnapError 从华为网关错误体里取出真正原因（APIG.xxxx + error_msg）。
-func describeSnapError(raw []byte) string {
-	var payload struct {
-		ErrorCode string `json:"error_code"`
-		ErrorMsg  string `json:"error_msg"`
-	}
-	if errUnmarshal := json.Unmarshal(raw, &payload); errUnmarshal == nil &&
-		(payload.ErrorCode != "" || payload.ErrorMsg != "") {
-		return strings.TrimSpace(payload.ErrorCode + " " + payload.ErrorMsg)
-	}
-	return core.Truncate(string(raw), 200)
 }
 
 // text / boolValue / identifier / firstInt 是对上游 JSON 的宽容取值助手。

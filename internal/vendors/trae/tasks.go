@@ -213,10 +213,10 @@ func checkinHeadersForUID(cred *Credential, uid string) map[string]string {
 		"Authorization":      "Cloud-IDE-JWT " + cred.AccessToken,
 		"X-Market-Client-Id": traeCheckinMarketClientID,
 		"X-Market-User-Id":   deriveMarketUserID(uid),
-		"X-User-Region":      "CN",
+		"X-User-Region":      cred.RegionHeader(),
 		"X-Device-Id":        deriveCheckinDeviceID(uid),
 		"X-Lgw-Req-Sdk-Type": "3",
-		"Package-Type":       "stable_cn",
+		"Package-Type":       cred.PackageTypeHeader(),
 		"X-Lscbd-Aid":        "787976",
 		"X-Lscbd-Platform":   "windows",
 		// 参考实现调用时产品信息为空，实际发送的就是字面量 undefined；
@@ -329,16 +329,12 @@ func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.Q
 	if cred == nil || cred.AccessToken == "" {
 		return nil, fmt.Errorf("credential missing")
 	}
-	if cfg.QuotaHost == "" {
-		// 国际版上游没有额度端点（实测 404）。
-		return nil, core.NewPluginError("quota_unsupported", "Trae 国际版无额度查询接口", http.StatusNotImplemented)
-	}
 
 	payload, errBody := json.Marshal(map[string]any{"require_usage": true, "req_source": 2})
 	if errBody != nil {
 		return nil, errBody
 	}
-	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, cfg.QuotaHost+EpEntUsage, bytes.NewReader(payload))
+	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, cfg.QuotaHost+cfg.QuotaPath, bytes.NewReader(payload))
 	if errReq != nil {
 		return nil, errReq
 	}

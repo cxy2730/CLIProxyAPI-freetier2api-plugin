@@ -184,6 +184,30 @@ func (v *adapter) fetchQuota(ctx context.Context, cred *Credential) (*pluginapi.
 	if snapshot.errBalance != nil {
 		return nil, snapshot.errBalance
 	}
+	if len(snapshot.metrics) == 0 {
+		// 上游在活动额度生效前不会生成 balances 桶，只回空额度；但授予量已经
+		// 写在 plans[].entitlements 里。用授予明细兜底展示「剩余 / 总额」，
+		// 并注明生效时刻，页面不必等到生效那一刻才有数字。
+		note := "尚未领取体验套餐（Start Plan），领取后才有额度"
+		if metrics, groups, effectiveAt := planGrantQuota(snapshot.plans, snapshot.serverTime); len(metrics) > 0 {
+			response.Summary = append(response.Summary, metrics...)
+			response.Groups = append(response.Groups, groups...)
+			note = "套餐已领取，额度尚未生效"
+			if effectiveAt > 0 {
+				note = "套餐已领取，额度 " + time.Unix(effectiveAt, 0).UTC().Format(time.RFC3339) + " 生效"
+			}
+		} else if len(grantCandidatePlans(snapshot.plans, snapshot.serverTime)) > 0 {
+			// 有套餐但没有可解析的授予明细：领了，桶还没生成。这里不按 status
+			// 过滤——pending 也可能是「已领取未生效」，说成「尚未领取」会误导。
+			note = "套餐已领取，额度桶尚未生效"
+		} else if len(snapshot.plans) > 0 {
+			// 套餐全都过期了：说成「尚未生效」同样是错的。
+			note = "套餐已过期，无可用额度"
+		}
+		response.Summary = append(response.Summary, pluginapi.QuotaMetric{
+			Key: "status", Label: "账号状态", Value: 1, Unit: note,
+		})
+	}
 	return response, nil
 }
 
@@ -612,17 +636,187 @@ func (v *adapter) fetchPlanSnapshot(ctx context.Context, cred *Credential) planS
 		}
 	}
 
+	// 投放有两条通道：billing/preview（计费通道）与 marketing/touch（营销通道）。
+	// 国内版实测活动只出现在营销通道，只看计费通道会把「有活动可领」误判成
+	// 「已领取全部套餐」——按钮因此一直是灰的。
+	//
+	// 只有计费通道拿不到投放时才查营销通道：正常情况下额度刷新仍是 balance +
+	// preview 两次请求，不给营销端点增加无关流量。
+	offered, errPreview := previewOfferedPlans(ctx, cred)
+	var marketing []core.PlanInfo
+	var errMarketing error
+	if errPreview != nil || len(offered) == 0 {
+		marketing, errMarketing = queryMarketingTouch(ctx, cred)
+		if errMarketing != nil {
+			logger.Info("zcode marketing/touch 失败: %v", errMarketing)
+		}
+	}
+	snapshot.offered, snapshot.errPreview = resolveOffers(offered, errPreview, marketing, errMarketing)
+	return snapshot
+}
+
+// resolveOffers 合并两条投放通道，并决定「没查到」时上报哪个错误。
+//
+// 空列表只有在两条通道都成功时才算「已领取全部套餐」：任一通道失败且最终没有
+// 任何投放，必须把失败写回错误，否则页面会把「没查到」显示成「已领取」，按钮
+// 永远置灰（见 claimStatusOf 的注释）。
+func resolveOffers(offered []core.PlanInfo, errPreview error, marketing []core.PlanInfo, errMarketing error) ([]core.PlanInfo, error) {
+	merged := mergeOfferedPlans(offered, marketing)
+	if len(merged) > 0 {
+		return merged, nil
+	}
+	if errPreview != nil {
+		return nil, errPreview
+	}
+	if errMarketing != nil {
+		return nil, errMarketing
+	}
+	return nil, nil
+}
+
+// previewOfferedPlans 查计费通道投放的套餐，把业务失败码折成错误。
+func previewOfferedPlans(ctx context.Context, cred *Credential) ([]core.PlanInfo, error) {
 	offered, code, errOffered := fetchOfferedPlans(ctx, cred)
 	if errOffered != nil {
-		snapshot.errPreview = errOffered
-		return snapshot
+		return nil, errOffered
 	}
 	if code != codeSuccess {
-		snapshot.errPreview = claimFailure(code, nil)
-		return snapshot
+		return nil, claimFailure(code, nil)
 	}
-	snapshot.offered = offered
-	return snapshot
+	return offered, nil
+}
+
+// mergeOfferedPlans 合并两条投放通道的套餐列表。
+//
+// 同一 plan_id 以计费通道为准（它带完整授予明细），其余按 normalizePlans 的
+// 优先级约定重排，保证页面顺序不随上游返回顺序抖动。
+func mergeOfferedPlans(primary, extra []core.PlanInfo) []core.PlanInfo {
+	seen := make(map[string]bool, len(primary)+len(extra))
+	merged := make([]core.PlanInfo, 0, len(primary)+len(extra))
+	for _, group := range [][]core.PlanInfo{primary, extra} {
+		for _, plan := range group {
+			if plan.PlanID == "" || seen[plan.PlanID] {
+				continue
+			}
+			seen[plan.PlanID] = true
+			merged = append(merged, plan)
+		}
+	}
+	sortPlansByPriority(merged)
+	return merged
+}
+
+// planGrantQuota 用套餐授予明细兜底额度展示。
+//
+// 活动套餐在 effective_at 之前不会生成 balances 桶，上游因此回空额度；但授予
+// 量已经写在 plans[].entitlements 里。页面据此仍能显示「剩余 / 总额」并注明
+// 生效时刻。balances 非空时不会走到这里。
+//
+// 只认模型用量类（meter=model_usage、unit_type=token）的授予，与 parsePlanGrants
+// 同一口径；按 entitlement_id 去重，避免多套餐重复累加同一份权益。
+func planGrantQuota(plans []map[string]any, serverTime int64) ([]pluginapi.QuotaMetric, []pluginapi.QuotaGroup, int64) {
+	seen := map[string]bool{}
+	group := pluginapi.QuotaGroup{DisplayName: "活动额度"}
+	var total float64
+	effectiveAt := int64(0)
+	for _, candidate := range grantCandidatePlans(plans, serverTime) {
+		if candidate.effectiveAt > 0 && (effectiveAt == 0 || candidate.effectiveAt < effectiveAt) {
+			effectiveAt = candidate.effectiveAt
+		}
+		for _, grant := range parsePlanGrants(candidate.plan) {
+			if grant.Model == "" || grant.Units <= 0 {
+				continue
+			}
+			// 有 entitlement_id 就按它去重：同模型同额度但确属两份授予时不会被
+			// 折叠；上游没给 ID 时才退回「模型 + 授予量」。
+			key := grant.ID
+			if key == "" {
+				key = grant.Model + "|" + formatTokens(grant.Units)
+			}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			total += grant.Units
+			description := "活动额度 " + formatTokens(grant.Units) + " tokens"
+			if candidate.effectiveAt > 0 {
+				description += "，" + time.Unix(candidate.effectiveAt, 0).UTC().Format(time.RFC3339) + " 生效"
+			}
+			group.Buckets = append(group.Buckets, pluginapi.QuotaBucket{
+				Window:            grant.Model,
+				RemainingFraction: 1,
+				Description:       description,
+			})
+		}
+	}
+	if total <= 0 {
+		return nil, nil, 0
+	}
+	metrics := []pluginapi.QuotaMetric{
+		{Key: "remaining", Label: "剩余", Value: total, Unit: "tokens"},
+		{Key: "total", Label: "总量", Value: total, Unit: "tokens"},
+	}
+	return metrics, []pluginapi.QuotaGroup{group}, effectiveAt
+}
+
+// grantCandidate 是参与额度兜底的套餐及其「最早未生效授予时刻」。
+type grantCandidate struct {
+	plan        map[string]any
+	effectiveAt int64
+}
+
+// grantCandidatePlans 返回参与额度兜底的套餐：已生效的，以及已领取但授予尚未
+// 生效的。
+//
+// 只看 activePlans 不够：上游对「已领取、额度未生效」的套餐可能标成 pending，
+// 那样既取不到授予明细，状态文案还会说成「尚未领取体验套餐」，与事实相反。
+// 到期时间已过的条目仍然排除。生效时刻一并带出，避免调用方重复解析 entitlements。
+func grantCandidatePlans(plans []map[string]any, serverTime int64) []grantCandidate {
+	out := make([]grantCandidate, 0, len(plans))
+	for _, plan := range plans {
+		if endsAt := core.GetUnixSeconds(plan, "ends_at"); endsAt > 0 && serverTime > 0 && endsAt <= serverTime {
+			continue
+		}
+		effective := pendingEffectiveAt(plan, serverTime)
+		status := strings.ToLower(strings.TrimSpace(core.RawStringField(plan, "status")))
+		if status == "" || status == "active" || effective > 0 {
+			out = append(out, grantCandidate{plan: plan, effectiveAt: effective})
+		}
+	}
+	return out
+}
+
+// pendingEffectiveAt 返回套餐里最早一个「尚未生效」的 token 授予时刻（Unix 秒）；
+// 没有则 0。
+//
+// 过滤条件与 parsePlanGrants 保持一致：功能类或非 token 的权益不算「额度生效」，
+// 否则页面会写出一个实际不存在的生效时刻。
+func pendingEffectiveAt(plan map[string]any, serverTime int64) int64 {
+	earliest := int64(0)
+	entitlements, _ := plan["entitlements"].([]any)
+	for _, item := range entitlements {
+		entry, okEntry := item.(map[string]any)
+		if !okEntry {
+			continue
+		}
+		if meter := core.RawStringField(entry, "meter"); meter != "" && meter != "model_usage" {
+			continue
+		}
+		if unit := core.RawStringField(entry, "unit_type"); unit != "" && unit != "token" {
+			continue
+		}
+		if firstPositiveFloat(entry, "grant_units", "grantUnits") <= 0 {
+			continue
+		}
+		effective := core.GetUnixSeconds(entry, "effective_at")
+		if effective <= 0 || serverTime <= 0 || effective <= serverTime {
+			continue
+		}
+		if earliest == 0 || effective < earliest {
+			earliest = effective
+		}
+	}
+	return earliest
 }
 
 // planRows 取 balance 响应里的 data.plans。
@@ -711,13 +905,21 @@ func normalizePlans(rows []map[string]any) []core.PlanInfo {
 		seen[plan.PlanID] = true
 		plans = append(plans, *plan)
 	}
+	sortPlansByPriority(plans)
+	return plans
+}
+
+// sortPlansByPriority 按优先级降序、plan_id 升序排序。
+//
+// 两条投放通道（billing/preview 与 marketing/touch）共用同一套顺序约定，
+// 否则合并后的列表会随上游返回顺序抖动。
+func sortPlansByPriority(plans []core.PlanInfo) {
 	sort.SliceStable(plans, func(i, j int) bool {
 		if plans[i].Priority != plans[j].Priority {
 			return plans[i].Priority > plans[j].Priority
 		}
 		return plans[i].PlanID < plans[j].PlanID
 	})
-	return plans
 }
 
 // ProbeActivity 只读探测账号当前可见的活动投放，不执行领取。
@@ -810,12 +1012,14 @@ func parsePlan(raw map[string]any) *core.PlanInfo {
 // 前端区分"没有额度信息"与"额度为 0"。
 func parsePlanGrants(raw map[string]any) []core.PlanGrant {
 	var grants []core.PlanGrant
-	appendGrant := func(name string, units float64, period string) {
+	appendGrant := func(id, name string, units float64, period string) {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			return
 		}
-		grants = append(grants, core.PlanGrant{Model: name, Units: units, Period: period})
+		grants = append(grants, core.PlanGrant{
+			ID: strings.TrimSpace(id), Model: name, Units: units, Period: period,
+		})
 	}
 
 	if entitlements, okList := raw["entitlements"].([]any); okList {
@@ -832,6 +1036,7 @@ func parsePlanGrants(raw map[string]any) []core.PlanGrant {
 				continue
 			}
 			appendGrant(
+				core.RawStringField(entry, "entitlement_id"),
 				core.FirstNonEmpty(core.RawStringField(entry, "show_name"), core.RawStringField(entry, "showName")),
 				firstPositiveFloat(entry, "grant_units", "grantUnits"),
 				core.RawStringField(entry, "period"),
@@ -846,6 +1051,7 @@ func parsePlanGrants(raw map[string]any) []core.PlanGrant {
 					continue
 				}
 				appendGrant(
+					core.FirstNonEmpty(core.RawStringField(entry, "id"), core.RawStringField(entry, "entitlement_id")),
 					core.RawStringField(entry, "name"),
 					firstPositiveFloat(entry, "units"),
 					core.RawStringField(entry, "period"),
@@ -1213,6 +1419,12 @@ func truncateText(text string, limit int) string {
 
 const pathMarketingTouch = "/api/v1/marketing/touch"
 
+// marketingTimeout 是营销投放查询的上限。
+//
+// 这条通道是额度查询的辅助来源：上游偶发长时间无响应时不能让它把整轮
+// 额度查询拖到超时（实测有 60s 以上的挂起）。
+const marketingTimeout = 10 * time.Second
+
 // marketingHeaders 复用上游身份与鉴权头；本接口是只读 GET，只额外声明 Accept。
 func marketingHeaders(cred *Credential) map[string]string {
 	headers := upstreamAuthHeaders(cred)
@@ -1238,7 +1450,7 @@ func queryMarketingTouch(ctx context.Context, cred *Credential) ([]core.PlanInfo
 		req.Header.Set(key, value)
 	}
 
-	resp, errDo := hostbridge.Client(ctx, billingHTTPTimeout).Do(req)
+	resp, errDo := hostbridge.Client(ctx, marketingTimeout).Do(req)
 	if errDo != nil {
 		return nil, errDo
 	}
