@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"freetier2api-plugin/cpasdk/pluginapi"
@@ -86,8 +86,8 @@ type opsActivity struct {
 // claimedStatuses 是活动已领取 / 已核销的状态值（IDE 据此禁用领取按钮）。
 var claimedStatuses = map[string]bool{"CLAIMED": true, "CONFIRMED": true, "CONSUMED": true}
 
-// Checkin 执行每日签到（积分活动）。
-func Checkin(ctx context.Context, cred *Credential) (*CheckinResult, error) {
+// checkin 分别执行积分签到与已开放通道的福利领取；领取状态按账号隔离。
+func checkin(ctx context.Context, cred *Credential, benefitState *benefitCheckinState) (*CheckinResult, error) {
 	if cred == nil || cred.AccessKeyID == "" {
 		return nil, fmt.Errorf("credential is nil or missing ak")
 	}
@@ -96,23 +96,23 @@ func Checkin(ctx context.Context, cred *Credential) (*CheckinResult, error) {
 	if errInfo != nil {
 		// 账户信息查不到时不能直接判失败：Token 计费账户本来就不在积分活动
 		// 范围，仍可能走福利 Token 通道。兜底也失败时保留两条链路的原因。
-		result, errFallback := claimBenefitTokenFallback(ctx, cred, false)
+		result, errFallback := claimBenefitTokenFallback(ctx, cred, false, benefitState)
 		if errFallback == nil {
 			return result, nil
 		}
-		return nil, errors.Join(errInfo, errFallback)
+		return nil, fmt.Errorf("%w；%w", errInfo, errFallback)
 	}
 	if !info.Package.IsCreditPackage {
 		// Token 计费账户不在积分活动范围，但仍可能有每日免费福利 Token。
-		return claimBenefitTokenFallback(ctx, cred, info.Package.IsTokenPackage)
+		return claimBenefitTokenFallback(ctx, cred, info.Package.IsTokenPackage, benefitState)
 	}
 
-	// 积分签到与免费模型福利是两份独立权益：积分账户也必须领取福利 Token，
-	// 否则签到成功后，走 maas_type=benefit 的对话仍会返回 4004。
+	// 积分签到与免费模型福利是两份独立权益：通道开放时，积分账户也单独
+	// 领取福利 Token；积分签到成功不代表已获得福利推理权益。
 	credit, errCredit := checkinCreditActivity(ctx, cred)
-	benefit, errBenefit := claimAvailableBenefitToken(ctx, cred)
+	benefit, errBenefit := benefitState.claimAvailable(ctx, cred)
 	if errCredit != nil && errBenefit != nil {
-		return nil, errors.Join(fmt.Errorf("积分签到失败: %w", errCredit), fmt.Errorf("福利 Token 领取失败: %w", errBenefit))
+		return nil, fmt.Errorf("积分签到失败: %w；福利 Token 领取失败: %w", errCredit, errBenefit)
 	}
 	if errCredit != nil {
 		if benefit != nil {
@@ -124,6 +124,7 @@ func Checkin(ctx context.Context, cred *Credential) (*CheckinResult, error) {
 		return nil, fmt.Errorf("%s；福利 Token 领取失败: %w", credit.Message, errBenefit)
 	}
 	if benefit == nil {
+		credit.Message += "；免费福利通道未开放，本次仅处理积分签到"
 		return credit, nil
 	}
 	return &CheckinResult{
@@ -366,8 +367,8 @@ type BenefitClaim struct {
 }
 
 // claimBenefitTokenFallback 为 Token 计费账户领取每日免费福利 Token。
-func claimBenefitTokenFallback(ctx context.Context, cred *Credential, isTokenAccount bool) (*CheckinResult, error) {
-	result, errClaim := claimAvailableBenefitToken(ctx, cred)
+func claimBenefitTokenFallback(ctx context.Context, cred *Credential, isTokenAccount bool, benefitState *benefitCheckinState) (*CheckinResult, error) {
+	result, errClaim := benefitState.claimAvailable(ctx, cred)
 	if errClaim != nil {
 		// 福利通道查询失败时，至少把「不在积分活动范围」的事实说清楚。
 		prefix := "非积分计费账户"
@@ -385,15 +386,34 @@ func claimBenefitTokenFallback(ctx context.Context, cred *Credential, isTokenAcc
 	return result, nil
 }
 
-// claimAvailableBenefitToken 先只读检查福利通道，再领取；未开放时返回 nil，
-// 不把正常的积分签到误判成失败，也不在查询额度或列模型时偷偷领取。
-func claimAvailableBenefitToken(ctx context.Context, cred *Credential) (*CheckinResult, error) {
+// benefitCheckinState 保存插件本次运行期间某账号的最近成功领取日期。
+// 不把余额、4000/4006 或积分签到成功猜成「福利已领取」；失败不缓存。
+// 重启后没有领取证明，会重新查询上游并如实处理结果。
+type benefitCheckinState struct {
+	mu        sync.Mutex
+	claimedOn string
+	now       func() time.Time
+}
+
+// claimAvailable 先只读检查通道；同一账号同一北京时间日期只领取成功一次。
+// 账号内加锁，避免手动签到与定时任务同时领取；不同账号互不阻塞。
+func (s *benefitCheckinState) claimAvailable(ctx context.Context, cred *Credential) (*CheckinResult, error) {
 	status, errStatus := fetchBenefitGatewayStatus(ctx, cred)
 	if errStatus != nil {
 		return nil, errStatus
 	}
 	if !status.Enabled {
 		return nil, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	if s.now != nil {
+		now = s.now()
+	}
+	day := now.UTC().Add(8 * time.Hour).Format("2006-01-02")
+	if s.claimedOn == day {
+		return &CheckinResult{Already: true, Message: "今日免费福利 Token 已领取"}, nil
 	}
 	claim, errClaim := claimBenefitToken(ctx, cred)
 	if errClaim != nil {
@@ -403,6 +423,7 @@ func claimAvailableBenefitToken(ctx context.Context, cred *Credential) (*Checkin
 	if claim.UserName != "" {
 		message = "已为 " + claim.UserName + " 领取当日免费福利 Token"
 	}
+	s.claimedOn = day
 	return &CheckinResult{Message: message}, nil
 }
 

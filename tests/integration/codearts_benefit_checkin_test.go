@@ -86,6 +86,19 @@ func TestCodeArtsBenefitCheckinThroughManagement(t *testing.T) {
 			if (account.Checkin.LastDate == "") != failBenefit {
 				t.Fatalf("failed benefit must not mark the day complete: %+v", account)
 			}
+			if !failBenefit {
+				second := managementCallWithBody(t, "POST", "/checkin", map[string]any{"account_ids": []string{"1"}})
+				if !strings.Contains(string(second.Body), "今日免费福利 Token 已领取") || claims.Load() != 1 {
+					t.Fatalf("repeated check-in must not claim again: %s claims=%d", second.Body, claims.Load())
+				}
+				status = managementCall(t, "GET", "/status")
+				if err := json.Unmarshal(status.Body, &snapshot); err != nil {
+					t.Fatal(err)
+				}
+				if snapshot.Accounts[0].History[0].Status != "already" {
+					t.Fatalf("repeat must be recorded as already: %s", status.Body)
+				}
+			}
 		})
 	}
 }

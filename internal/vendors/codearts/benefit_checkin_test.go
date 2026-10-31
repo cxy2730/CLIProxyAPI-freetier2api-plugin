@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"freetier2api-plugin/internal/hostbridge"
 )
@@ -144,7 +147,7 @@ func TestCheckinClaimsBenefitsIndependentlyOfCredits(t *testing.T) {
 				return json.Marshal(map[string]any{"StatusCode": 200, "Headers": map[string][]string{"Content-Type": {"application/json"}}, "Body": []byte(body)})
 			})
 			t.Cleanup(func() { hostbridge.Configure(nil) })
-			result, err := Checkin(context.Background(), &Credential{AccessKeyID: "fixture-ak", SecretAccessKey: "fixture-sk", SecurityToken: "fixture-sts"})
+			result, err := checkin(context.Background(), &Credential{AccessKeyID: "fixture-ak", SecretAccessKey: "fixture-sk", SecurityToken: "fixture-sts"}, &benefitCheckinState{})
 			if (err != nil) != tc.wantError {
 				t.Fatalf("result=%+v error=%v, wantError=%v", result, err, tc.wantError)
 			}
@@ -176,4 +179,92 @@ func TestCheckinClaimsBenefitsIndependentlyOfCredits(t *testing.T) {
 			}
 		})
 	}
+}
+
+// 同日成功后由本地成功证据短路，不依赖上游是否允许重复领取。
+// 未确认的 4006 不得被猜成 already，失败后仍允许下一次人工/定时重试。
+func TestBenefitDailyGuardAndFailedRetry(t *testing.T) {
+	for _, firstFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("firstFails=%v", firstFails), func(t *testing.T) {
+			var claims atomic.Int32
+			stubBenefitClaims(t, &claims, firstFails)
+			cred := &Credential{AccessKeyID: "ak", SecretAccessKey: "sk"}
+			clock := time.Date(2026, 10, 31, 15, 59, 0, 0, time.UTC) // 北京时间 23:59。
+			state := &benefitCheckinState{now: func() time.Time { return clock }}
+			first, err := state.claimAvailable(context.Background(), cred)
+			if firstFails {
+				if err == nil || first != nil || state.claimedOn != "" {
+					t.Fatalf("4006 must remain an unrecorded failure: %+v %v", first, err)
+				}
+			} else if err != nil || first.Already {
+				t.Fatalf("first claim: %+v %v", first, err)
+			}
+			second, err := state.claimAvailable(context.Background(), cred)
+			if err != nil || second.Already == firstFails {
+				t.Fatalf("retry/guard: %+v %v", second, err)
+			}
+			wantCalls := int32(1)
+			if firstFails {
+				wantCalls = 2
+			}
+			if claims.Load() != wantCalls {
+				t.Fatalf("claims=%d, want %d", claims.Load(), wantCalls)
+			}
+			clock = clock.Add(2 * time.Minute) // UTC 日期不变，但北京时间已跨天。
+			next, err := state.claimAvailable(context.Background(), cred)
+			if err != nil || next.Already || claims.Load() != wantCalls+1 {
+				t.Fatalf("new Beijing day must claim again: %+v %v calls=%d", next, err, claims.Load())
+			}
+		})
+	}
+}
+
+func TestBenefitConcurrentClaimsAreCoalesced(t *testing.T) {
+	var claims atomic.Int32
+	stubBenefitClaims(t, &claims, false)
+	state := &benefitCheckinState{now: func() time.Time { return time.Date(2026, 10, 31, 4, 0, 0, 0, time.UTC) }}
+	cred := &Credential{AccessKeyID: "ak", SecretAccessKey: "sk"}
+	var wait sync.WaitGroup
+	var already atomic.Int32
+	for i := 0; i < 8; i++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			result, err := state.claimAvailable(context.Background(), cred)
+			if err != nil || result == nil {
+				t.Errorf("claim: %+v %v", result, err)
+				return
+			}
+			if result.Already {
+				already.Add(1)
+			}
+		}()
+	}
+	wait.Wait()
+	if claims.Load() != 1 || already.Load() != 7 {
+		t.Fatalf("expected one claim and seven already results: claims=%d already=%d", claims.Load(), already.Load())
+	}
+}
+
+func stubBenefitClaims(t *testing.T, claims *atomic.Int32, firstFails bool) {
+	t.Helper()
+	hostbridge.Configure(func(_ string, method string, payload any) (json.RawMessage, error) {
+		raw, _ := json.Marshal(payload)
+		var req struct {
+			URL string `json:"url"`
+		}
+		_ = json.Unmarshal(raw, &req)
+		body := `{"enabled":true}`
+		if req.URL == BenefitHost+EpBenefitClaim {
+			count := claims.Add(1)
+			body = `{"error_code":"0000","result":{"channel":"codearts","user_id":"fixture"}}`
+			if firstFails && count == 1 {
+				body = `{"error_code":"4006","error_msg":"4006"}`
+			}
+		} else if req.URL != SnapEngineApiHost+EpBenefitGateway {
+			return nil, fmt.Errorf("unexpected URL %s", req.URL)
+		}
+		return json.Marshal(map[string]any{"StatusCode": 200, "Body": []byte(body)})
+	})
+	t.Cleanup(func() { hostbridge.Configure(nil) })
 }

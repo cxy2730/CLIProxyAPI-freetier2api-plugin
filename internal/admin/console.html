@@ -1213,17 +1213,6 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
           var checkinCell = el("td", checkin.last_date
             ? (checkin.last_date + (checkin.streak ? " · 连续 " + checkin.streak + " 天" : ""))
             : "未签到");
-          if (account.vendor_id === "codearts") {
-            var benefitBtn = el("button", "领取每日福利", "act primary");
-            benefitBtn.type = "button";
-            benefitBtn.disabled = !!account.disabled;
-            benefitBtn.title = "领取该账号的免费福利 Token，并执行积分签到；两种权益分别领取";
-            benefitBtn.style.marginLeft = "8px";
-            benefitBtn.addEventListener("click", function () {
-              runCheckin([account.auth_id || account.auth_index], this);
-            });
-            checkinCell.appendChild(benefitBtn);
-          }
           var history = account.checkin_history || [];
           if (history.length) {
             var historyBtn = el("button", "历史 " + history.length, "act");
@@ -3057,12 +3046,14 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       var failedCount = results.filter(function (r) { return !r.ok; }).length;
       var total = results.length;
       // 成功也展示权益领取结果；失败必须展示上游原因，而不只是一个失败数。
-      var details = results.map(function (r) {
+      var detailed = results.filter(function (r) { return total === 1 || !r.ok || r.skipped; });
+      var details = detailed.slice(0, 3).map(function (r) {
         return (r.label || r.auth_id) + "：" + (r.message || (r.ok ? "已完成" : "失败"));
       });
+      if (detailed.length > 3) details.push("另 " + (detailed.length - 3) + " 条结果请查看签到历史");
       banner(doneCount === total ? "ok" : "warn", "签到 / 福利领取完成：" + doneCount + " / " + total + " 成功" +
         (skippedCount ? "，" + skippedCount + " 个未完成" : "") +
-        (failedCount ? "，" + failedCount + " 个失败" : "") + "；" + details.join("；"), 12000);
+        (failedCount ? "，" + failedCount + " 个失败" : "") + (details.length ? "；" + details.join("；") : ""), 12000);
       // 签到手上有新积分，但账号表读的是后端额度缓存（上一次 /quotas 的
       // 结果），不重查就会一直显示签到前的数字。loadQuotas 结束时会重拉账号表。
       loadQuotas(true, accountIDs);

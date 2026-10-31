@@ -25,8 +25,7 @@ type ChatRequest struct {
 	Stream     bool
 	// Benefit 走每日免费福利额度通道（请求头带 maas_type: benefit）。
 	//
-	// 本插件只服务免费福利通道：上游把每日免费额度与订阅积分分成两条通道，
-	// 同一个模型名两边都有，区别就是这个头。要接积分通道时在这里分开即可。
+	// 默认走免费福利通道；积分通道仅在显式开启配置后使用，不自动降级。
 	Benefit bool
 }
 
@@ -44,12 +43,12 @@ func Chat(ctx context.Context, baseURL string, req ChatRequest) ([]byte, error) 
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, Classify(resp.StatusCode, string(body))
+		return nil, dialogueFailure(Classify(resp.StatusCode, string(body)))
 	}
 	// HTTP 200 也可能是业务错误信封（{"error_code":"4004","error_msg":...}）：
 	// 原样透传客户端只会拿到一个不符合 OpenAI 契约的响应体。
 	if failure, okFailure := ErrorFromPayload(body); okFailure {
-		return nil, failure
+		return nil, dialogueFailure(failure)
 	}
 
 	return body, nil
@@ -65,7 +64,7 @@ func ChatStream(ctx context.Context, baseURL string, req ChatRequest) (*http.Res
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		_ = resp.Body.Close()
-		return nil, Classify(resp.StatusCode, string(body))
+		return nil, dialogueFailure(Classify(resp.StatusCode, string(body)))
 	}
 
 	return resp, nil
@@ -116,6 +115,14 @@ func doCodeArtsRequest(ctx context.Context, baseURL string, req ChatRequest) (*h
 	}
 	httpReq.Header.Set("Agent-Type", "PromptCenter")
 	httpReq.Header.Set("User-Agent", "CodeArtsAgent/5.2.0")
+	// 上游要求模型头与请求体严格一致，签名必须覆盖两者。
+	var model struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(req.Body, &model) == nil && model.Model != "" {
+		httpReq.Header.Set("Model-Id", model.Model)
+		httpReq.Header.Set("Model-Name", model.Model)
+	}
 	if req.Benefit {
 		// 必须放在签名之前：签名覆盖该头，晚设就不生效，
 		// 请求会被判成积分通道并按积分计费。

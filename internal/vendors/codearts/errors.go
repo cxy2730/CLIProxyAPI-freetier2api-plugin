@@ -21,7 +21,7 @@ const (
 	benefitCodeMarker = "InferHub.4004.200"
 	benefitMsgMarker  = "benefit not found"
 	// benefitHint 是给用户的可操作提示，附在上游原文之后而不是替换它。
-	benefitHint = "未领取免费福利模型配额，请在插件账号页点击「领取每日福利」或选中账号后点「一键签到」；自动领取使用「每日自动签到」设置"
+	benefitHint = "免费福利通道缺少有效权益；上游开放时可通过「一键签到」领取，签到无法恢复已关闭的通道。使用积分推理需明确开启 codearts_credit_enabled（会消耗账号积分）"
 )
 
 // errorEnvelope 是 CodeArts / InferHub 的业务错误信封。
@@ -126,6 +126,7 @@ func ErrorFromPayload(payload []byte) (*core.Failure, bool) {
 // 宿主只认 {"error":{"message":...}} 形态的终止帧（见宿主 chunkTerminalError）：
 // 认不出上游帧时它会用「流提前结束」覆盖真实原因，这正是 issue #58 的现象。
 func OpenAIErrorFrame(failure *core.Failure) ([]byte, error) {
+	failure = dialogueFailure(failure)
 	return json.Marshal(map[string]any{
 		"error": map[string]any{
 			"message": failure.Msg,
@@ -149,9 +150,9 @@ func classifyFailure(status int, code, msg string, payloadErr bool) *core.Failur
 			// 该账号对这个模型没有免费福利：换模型或换账号即可，凭证本身没坏。
 			// 归到 model_blocked（可重试、404）而不是 credential——401 会让宿主
 			// 直接禁用凭证，把「某个模型不可用」升级成「账号失效」。
-			return &core.Failure{Kind: core.FailureKindModelBlocked, Code: code, Msg: withBenefitHint(msg)}
+			return &core.Failure{Kind: core.FailureKindModelBlocked, Code: code, Msg: msg}
 		}
-		return &core.Failure{Kind: core.FailureKindCredential, Status: status, Code: code, Msg: withBenefitHint(msg)}
+		return &core.Failure{Kind: core.FailureKindCredential, Status: status, Code: code, Msg: msg}
 	case status == http.StatusTooManyRequests || strings.Contains(code, "Throttling"):
 		return &core.Failure{Kind: core.FailureKindRateLimit, Status: status, Code: code, Msg: msg}
 	case status >= 500:
@@ -159,6 +160,16 @@ func classifyFailure(status int, code, msg string, payloadErr bool) *core.Failur
 	default:
 		return &core.Failure{Kind: core.FailureKindClient, Status: status, Code: code, Msg: msg}
 	}
+}
+
+// dialogueFailure 只为对话错误追加操作指引；管理页刚执行完签到时不重复催领。
+func dialogueFailure(failure *core.Failure) *core.Failure {
+	if !isBenefitMissing(failure.Code, failure.Msg) {
+		return failure
+	}
+	copy := *failure
+	copy.Msg = withBenefitHint(copy.Msg)
+	return &copy
 }
 
 // isBenefitMissing 判断是否为「账号没有该模型的免费福利」。
