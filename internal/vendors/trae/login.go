@@ -610,7 +610,7 @@ func exchangeTraeToken(ctx context.Context, authHost, clientID, userID, refreshT
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := hostbridge.Client(ctx, 30*time.Second)
+	client := hostbridge.Client(ctx, perRequestTimeout)
 	resp, errDo := client.Do(req)
 	if errDo != nil {
 		return "", "", 0, errDo
@@ -709,7 +709,7 @@ func RefreshCredential(ctx context.Context, cred *Credential, cfg Config) (*Cred
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := hostbridge.Client(ctx, 30*time.Second)
+	client := hostbridge.Client(ctx, perRequestTimeout)
 	resp, errDo := client.Do(req)
 	if errDo != nil {
 		return nil, false, fmt.Errorf("trae refresh token request failed: %w", errDo)

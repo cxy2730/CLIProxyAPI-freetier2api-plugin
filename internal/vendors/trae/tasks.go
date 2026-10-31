@@ -11,8 +11,9 @@ package trae
 // 额度（仅国内版）：POST pay/ide_user_ent_usage 取权益包列表，
 // 只统计 product_type=2 的积分包（credits_limit=-1 表示无限）。
 //
-// 活动福利（仅国内版）：签到之外还有 5 个无需输入的领奖入口（竞赛 / 联合
-// 活动 / 抽奖 / 两个分享裂变），详见文件末尾的 UGActions 与 ClaimUG。
+// 活动福利（仅国内版）：签到之外还有 2 个无需输入的领奖入口（竞赛 / 抽奖），
+// 详见文件末尾的 UGActions 与 ClaimUG。联合活动与两个分享裂变需要活动 ID 或
+// 作品 ID，插件取不到，故不进批量入口（端点常量仍保留）。
 //
 // 兑换码需要用户输入，而手动触发路由只传任务族名、没有请求体通道，故不提供
 // 入口——留着实现却调不到，只会是死代码。
@@ -164,6 +165,13 @@ func claimCheckinCredits(ctx context.Context, cfg Config, headers map[string]str
 	return lastErr
 }
 
+// perRequestTimeout 是单个上游请求的超时，签到 / 额度 / 活动三个端点共用。
+//
+// 活动福利的一轮总预算（ugRoundTimeout）按它推算：端点数 × perRequestTimeout
+// 就是「每个端点都卡满」的耗时，总预算必须严格大于这个乘积。两边都读这一个
+// 常量，改超时只改这里，不会出现「预算按 30s 算、实际单请求 60s」这种错配。
+const perRequestTimeout = 30 * time.Second
+
 // postJSON 发一次 JSON POST 并返回状态码与响应体（读上限 1MB）。
 //
 // 签到、额度、活动三个端点用的是同一套官方客户端头、同一个超时，只是对非
@@ -180,7 +188,7 @@ func postJSON(ctx context.Context, url string, headers map[string]string, payloa
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
-	resp, errDo := hostbridge.Client(ctx, 30*time.Second).Do(req)
+	resp, errDo := hostbridge.Client(ctx, perRequestTimeout).Do(req)
 	if errDo != nil {
 		return 0, nil, fmt.Errorf("trae request failed: %w", errDo)
 	}
@@ -428,14 +436,8 @@ func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.Q
 const (
 	// EpUGCompetitionClaim 领取竞赛奖励。
 	EpUGCompetitionClaim = "/trae/api/v2/ug/competition/claim_package"
-	// EpUGCobrandClaim 领取联合品牌（联合会员/联名活动）奖励。
-	EpUGCobrandClaim = "/trae/api/v2/ug/cobrand/claim"
 	// EpUGWorkLotteryDraw 抽奖（作品活动）。
 	EpUGWorkLotteryDraw = "/trae/api/v2/ug/work_lottery/draw"
-	// EpUGWorkFissionShare 作品分享裂变（生成分享链接即计一次）。
-	EpUGWorkFissionShare = "/trae/api/v2/ug/work_fission/share_link"
-	// EpUGCodeFissionShare 代码分享裂变。
-	EpUGCodeFissionShare = "/trae/api/v2/ug/code_fission/share_link"
 )
 
 // UGAction 描述一个福利端点。
@@ -448,17 +450,21 @@ type UGAction struct {
 	Path string
 }
 
-// UGActions 返回签到之外的全部活动入口。
+// UGActions 返回签到之外可批量尝试的活动入口。
 //
-// 顺序即执行顺序：先领奖类（幂等、领到就是领到），后裂变类（会生成分享
-// 链接，放在最后，避免它失败时挡住真正的领奖）。
+// 只收「不带任何入参就能 POST」的端点。另有三个端点必须带活动 ID 或作品 ID
+// （实测上游回 4001 / 9080「param is invalid」），而插件既没有取活动列表的
+// 渠道、也拿不到用户的作品 ID，因此不进清单：
+//   - POST /trae/api/v2/ug/cobrand/claim（需 activity_id）
+//   - POST /trae/api/v2/ug/work_fission/share_link（需作品 ID）
+//   - POST /trae/api/v2/ug/code_fission/share_link（需作品 ID）
+//
+// 放进批量入口只会每轮白打 3 次请求（各自最多 30s），再把注定失败的结果
+// 包装成「暂不可领」，既拖慢整轮又掩盖真实原因。等能取到 ID 再接。
 func UGActions() []UGAction {
 	return []UGAction{
 		{Key: "competition_claim", Label: "竞赛奖励", Path: EpUGCompetitionClaim},
-		{Key: "cobrand_claim", Label: "联合活动奖励", Path: EpUGCobrandClaim},
 		{Key: "work_lottery_draw", Label: "作品抽奖", Path: EpUGWorkLotteryDraw},
-		{Key: "work_fission_share", Label: "作品分享奖励", Path: EpUGWorkFissionShare},
-		{Key: "code_fission_share", Label: "代码分享奖励", Path: EpUGCodeFissionShare},
 	}
 }
 
@@ -470,7 +476,8 @@ const (
 	UGClaimed UGStatus = iota
 	// UGAlready 表示上游明确说之前领过。
 	UGAlready
-	// UGUnavailable 表示活动未开始 / 已结束 / 当前账号不满足条件。
+	// UGUnavailable 表示「这次请求注定拿不到」：活动未开始 / 已结束 / 当前
+	// 账号不满足条件 / 上游要求插件取不到的入参。都不该重试。
 	UGUnavailable
 	// UGFailed 表示调用失败或上游报错，需要人看一眼。
 	UGFailed
@@ -497,15 +504,25 @@ func (r UGResult) Describe() string {
 		return fmt.Sprintf("%s：此前已领取", r.Label)
 	case UGUnavailable:
 		if detail := strings.TrimSpace(r.Message); detail != "" {
-			return fmt.Sprintf("%s：暂不可领（%s）", r.Label, detail)
+			return fmt.Sprintf("%s：暂不可领（%s）", r.Label, ugDetailText(detail))
 		}
 		return fmt.Sprintf("%s：暂不可领", r.Label)
 	default:
 		if detail := strings.TrimSpace(r.Message); detail != "" {
-			return fmt.Sprintf("%s：失败（%s）", r.Label, detail)
+			return fmt.Sprintf("%s：失败（%s）", r.Label, ugDetailText(detail))
 		}
 		return fmt.Sprintf("%s：失败", r.Label)
 	}
+}
+
+// ugDetailText 把上游的机器文案翻成人话，认不出的原样返回（不吞原始信息）。
+func ugDetailText(message string) string {
+	// 缺参类文案（param is invalid / 9080）已随「需要入参的端点」一起退出
+	// 批量入口，不会再出现在结果里，所以这里只剩「活动整体还没开」要翻译。
+	if core.ContainsAny(strings.ToLower(message), ugSoftUnavailableMarkers) {
+		return "活动暂不可用"
+	}
+	return message
 }
 
 // ClaimUG 依次领取全部不需要输入的福利端点。
@@ -525,8 +542,10 @@ func ClaimUG(ctx context.Context, cred *Credential, cfg Config) ([]UGResult, err
 	if errHeaders != nil {
 		return nil, errHeaders
 	}
-	// 整轮 60s 上限：5 个端点各 30s 串行，最坏能拖到两分半，宿主的排程窗口
-	// 会被一次慢上游占满。超时与取消一样：把已拿到的结果带出去。
+	// 整轮 75s 上限：2 个端点各 30s 串行，最坏 60s，留 15s 给建连与解析。
+	// 预算必须大于「端点个数 × 单端点超时」：两者相等时，第一个端点一旦卡满
+	// 30s，第二个端点剩下的预算连握手都不够，结构上必然被砍掉。
+	// 超时与取消一样：把已拿到的结果带出去。
 	ctx, cancel := context.WithTimeout(ctx, ugRoundTimeout)
 	defer cancel()
 
@@ -546,7 +565,11 @@ func ClaimUG(ctx context.Context, cred *Credential, cfg Config) ([]UGResult, err
 }
 
 // ugRoundTimeout 是一轮活动福利领取的总上限。
-const ugRoundTimeout = 60 * time.Second
+//
+// 必须严格大于「UGActions() 长度 × perRequestTimeout」，否则最后一个端点在
+// 慢上游下必然拿不到结果。当前 2 个端点 × 30s → 60s，取 75s 留 15s 余量；
+// 加端点时同步上调（ug_test.go 用同一个常量验算，改超时不会漏改预算）。
+const ugRoundTimeout = 75 * time.Second
 
 // claimUGOne 打一个端点并归类结果。
 //
@@ -575,6 +598,15 @@ func claimUGOne(ctx context.Context, cfg Config, headers map[string]string, acti
 		Msg     string `json:"msg"`
 	}
 	if errJSON := json.Unmarshal(body, &envelope); errJSON != nil || envelope.Code == nil {
+		// 少数端点（实测 claim_package）回的是纯状态对象：没有业务码，
+		// 只有 eligible / newly_granted。按 code==nil 一律归失败会把「当前
+		// 账号不满足条件」报成上游故障，所以先认状态字段再退回失败。
+		if state, okState := readUGState(body); okState {
+			result.Status, result.Message = state.describe()
+			// 上游没给业务码，Code 保持零值占位——所以任何地方都不能按
+			// Code==0 判「上游回 0 = 已领取」，只能按 Status 判。
+			return result, nil
+		}
 		result.Status = UGFailed
 		result.Message = truncateBody(string(body))
 		if result.Message == "" {
@@ -590,7 +622,21 @@ func claimUGOne(ctx context.Context, cfg Config, headers map[string]string, acti
 	case status == http.StatusOK:
 		result.Status = classifyUGMessage(result.Message)
 	default:
-		// 非 200：按失败报，原始码与文案原样带出。
+		// 非 200：**只有 4xx 才按文案归类**。
+		//
+		// 4xx 是「这次请求本身不对」：实测 cobrand/claim 缺 activity_id 回
+		// 400 + 9080「param is invalid」（我们没带参数），409 + 1001「该奖励
+		// 已领取」（此前领过）。这两种重试都不会变，归到对应状态是对的。
+		//
+		// 5xx 与 429 必须留给 Classify 走 Transient：上游 503 若因为文案里
+		// 恰好带「暂不可用」就被折成「暂不可领」，调度和用户都不会重试，
+		// 真实故障被静默吞掉。这正是本函数原先的缺陷。
+		if status >= 400 && status < 500 && status != http.StatusTooManyRequests {
+			if classified := classifyUGMessage(result.Message); classified == UGUnavailable || classified == UGAlready {
+				result.Status = classified
+				return result, nil
+			}
+		}
 		result.Status = UGFailed
 		if result.Message == "" {
 			if failure := Classify(status, string(body)); failure != nil {
@@ -616,11 +662,89 @@ func truncateBody(body string) string {
 	return trimmed
 }
 
+// ugState 是「无业务码」响应的状态字段。
+//
+// 实测 claim_package 回的是纯状态对象（eligible=false，没有 code）。用指针
+// 区分「上游没给这个字段」与「给了 false」，否则缺字段会被当成不满足条件。
+type ugState struct {
+	Eligible     *bool
+	NewlyGranted *bool
+}
+
+// readUGState 从响应体里读 eligible / newly_granted（顶层，或包一层 data）。
+//
+// 实测只有这两种形状，所以用定长结构一次解完，不做递归下钻：多包几层的
+// 响应从没出现过，为它写通用遍历只会让「到底认哪些字段」变得不可读。
+// 第二个返回值 false 表示两个字段都没出现，调用方应退回原有的失败归类。
+func readUGState(body []byte) (ugState, bool) {
+	type ugStateFields struct {
+		Eligible     *bool `json:"eligible"`
+		NewlyGranted *bool `json:"newly_granted"`
+	}
+	var probe struct {
+		ugStateFields
+		Data *ugStateFields `json:"data"`
+	}
+	if errJSON := json.Unmarshal(body, &probe); errJSON != nil {
+		return ugState{}, false
+	}
+	state := ugState{Eligible: probe.Eligible, NewlyGranted: probe.NewlyGranted}
+	// 逐字段回落，而不是「顶层有任一字段就整层信顶层」：上游出现过顶层只给
+	// eligible、data 里另给 newly_granted 的混合形状。整层优先会把 data 里的
+	// 新字段直接丢掉，把「本次已发放」读成「可参与但未发放」——判反了。
+	if probe.Data != nil {
+		if state.Eligible == nil {
+			state.Eligible = probe.Data.Eligible
+		}
+		if state.NewlyGranted == nil {
+			state.NewlyGranted = probe.Data.NewlyGranted
+		}
+	}
+	if state.Eligible == nil && state.NewlyGranted == nil {
+		return ugState{}, false
+	}
+	return state, true
+}
+
+// describe 把状态字段翻成 (状态, 文案)。
+func (s ugState) describe() (UGStatus, string) {
+	switch {
+	case s.NewlyGranted != nil && *s.NewlyGranted:
+		return UGClaimed, "上游本次发放成功"
+	case s.Eligible != nil && !*s.Eligible:
+		return UGUnavailable, "当前账号不满足活动条件"
+	case s.Eligible != nil && *s.Eligible:
+		return UGUnavailable, "活动可参与，但本次未发放"
+	default:
+		// 只给了 newly_granted=false（没给 eligible）：本次没发东西。
+		return UGUnavailable, "本次未发放"
+	}
+}
+
 // 上游不会给出稳定的码表，只能按文案粗分；标记表放在包级只读变量里，
 // 避免每次调用都分配一次切片。
 var (
-	ugAlreadyMarkers     = []string{"已领取", "已经领取", "重复领取", "已参与", "已经参与", "已兑换", "已经兑换", "already"}
-	ugUnavailableMarkers = []string{"未开始", "已结束", "活动结束", "未参与", "不满足", "无资格", "不在活动", "not started", "ended"}
+	ugAlreadyMarkers = []string{"已领取", "已经领取", "重复领取", "已参与", "已经参与", "已兑换", "已经兑换", "already"}
+
+	// ugParamMarkers 是「上游要求额外参数」的标记。实测两个 share_link 回
+	// 4001、cobrand/claim 回 9080，文案都是「param is invalid」——这些端点
+	// 已不在 UGActions() 里（插件拿不到活动/作品 ID），但归类表仍要认识这批
+	// 文案：日后接上入参时，失败原因能直接读对，不用再猜一次。
+	ugParamMarkers = []string{"param is invalid", "参数错误", "参数不合法", "参数无效", "缺少参数", "参数缺失"}
+
+	// ugSoftUnavailableMarkers 是「活动整体还没开 / 没开完」的柔和说法。
+	// 实测 work_lottery/draw 回 9069「活动暂不可用」。
+	ugSoftUnavailableMarkers = []string{"暂不可用", "暂未开放"}
+
+	// ugUnavailableMarkers 是完整的「暂不可领」表：活动状态类 + 柔和说法 +
+	// 缺参类。后两组直接复用上面的表，避免同一批文案写两份、改一处漏一处。
+	ugUnavailableMarkers = append(
+		append([]string{
+			"未开始", "已结束", "活动结束", "未参与", "不满足", "无资格", "不在活动",
+			"暂不可领", "not started", "ended", "unavailable",
+		}, ugSoftUnavailableMarkers...),
+		ugParamMarkers...,
+	)
 )
 
 // classifyUGMessage 按上游文案做粗归类。
