@@ -548,8 +548,9 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   // 管理密钥，用户不必再输入一遍。面板把整份认证状态存在 localStorage 的
   // "cli-proxy-auth" 键下，值是可逆的 XOR 混淆：
   //
-  //   enc::v1:: + base64( utf8(JSON) XOR key )
-  //   key = utf8("cli-proxy-api-webui::secure-storage|<host>|<userAgent>")
+  //   enc::v2:: + base64( utf8(JSON) XOR utf8(seed|<host>) )          ← 8.0.48 起
+  //   enc::v1:: + base64( utf8(JSON) XOR utf8(seed|<host>|<userAgent>) )  ← 旧版
+  //   seed = "cli-proxy-api-webui::secure-storage"
   //
   // 明文形如 {"state":{...,"managementKey":"<密钥>",...},"version":N}，
   // 密钥在 state.managementKey。
@@ -560,25 +561,53 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   var PANEL_STORE_KEY = "cli-proxy-auth";
   var PANEL_KEY_FIELD = "managementKey";
   var MANUAL_STORE_KEY = "cpa-management-key";
-  var OBF_PREFIX = "enc::v1::";
+  // 混淆格式必须与 CPA 面板逐字节一致（面板侧同一份实现）：
+  //
+  //   v1: "enc::v1::" + base64( utf8(JSON) XOR utf8(seed|host|userAgent) )
+  //   v2: "enc::v2::" + base64( utf8(JSON) XOR utf8(seed|host) )
+  //
+  // CPA 8.0.48 起面板改写入 v2（派生密钥不再掺 userAgent，浏览器升级后不会
+  // 解出乱码），读取端仍兼容 v1。本页必须两种都认——只认 v1 的话，升级后面板
+  // 明明勾了「记住密码」，这里却一律读不到密钥。
+  var OBF_PREFIX_V1 = "enc::v1::";
+  var OBF_PREFIX_V2 = "enc::v2::";
+  var OBF_PREFIX_RE = /^enc::v\d+::/;
   var OBF_SEED = "cli-proxy-api-webui::secure-storage";
   var manualKey = "";
   var keyBusy = false;
   var keyRetryAfter = 0;
 
-  function obfuscationKey() {
+  // obfuscationKey 派生 XOR 密钥。v1 掺 userAgent，v2 只到 host。
+  function obfuscationKey(withUA) {
     return new TextEncoder().encode(
-      OBF_SEED + "|" + location.host + "|" + navigator.userAgent);
+      OBF_SEED + "|" + location.host + (withUA ? "|" + navigator.userAgent : ""));
+  }
+
+  // isObfuscated 判断存储值是否为本页认识的混淆串。
+  function isObfuscated(raw) {
+    return typeof raw === "string"
+      && (raw.indexOf(OBF_PREFIX_V1) === 0 || raw.indexOf(OBF_PREFIX_V2) === 0);
   }
 
   // deobfuscate 还原面板写入的值；不是混淆格式或解码失败时返回 null。
   function deobfuscate(raw) {
-    if (!raw || raw.indexOf(OBF_PREFIX) !== 0) return null;
+    if (!raw) return null;
+    var prefix, withUA;
+    if (raw.indexOf(OBF_PREFIX_V2) === 0) { prefix = OBF_PREFIX_V2; withUA = false; }
+    else if (raw.indexOf(OBF_PREFIX_V1) === 0) { prefix = OBF_PREFIX_V1; withUA = true; }
+    else {
+      // 认识的混淆家族但不是已知版本：面板升级换了格式，静默失败会让用户
+      // 只看到「未检测到管理密钥」，这里留一条线索。
+      if (OBF_PREFIX_RE.test(raw)) {
+        try { console.warn("面板存储格式版本不受支持，请升级本插件：", raw.slice(0, 9)); } catch (e) { /* 忽略 */ }
+      }
+      return null;
+    }
     try {
-      var binary = atob(raw.slice(OBF_PREFIX.length));
+      var binary = atob(raw.slice(prefix.length));
       var bytes = new Uint8Array(binary.length);
       for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      var key = obfuscationKey();
+      var key = obfuscationKey(withUA);
       for (var j = 0; j < bytes.length; j++) bytes[j] ^= key[j % key.length];
       return new TextDecoder().decode(bytes);
     } catch (e) {
@@ -598,7 +627,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   function normalizeKeyValue(raw) {
     if (!raw) return "";
     var text = String(raw).trim();
-    if (text.indexOf(OBF_PREFIX) === 0) return "";        // 混淆串，交给 deobfuscate
+    if (isObfuscated(text)) return "";                    // 混淆串，交给 deobfuscate
     if (text === "null" || text === "undefined") return "";
     // 面板用 JSON.stringify 存，因此值可能带引号。
     if (text.length > 1 && text.charAt(0) === '"' && text.charAt(text.length - 1) === '"') {
@@ -623,7 +652,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     try { raw = localStorage.getItem(PANEL_STORE_KEY) || ""; } catch (e) { return ""; }
     if (!raw) return "";
     var text = raw;
-    if (raw.indexOf(OBF_PREFIX) === 0) {
+    if (isObfuscated(raw)) {
       text = deobfuscate(raw) || "";
       if (!text) return "";
     }

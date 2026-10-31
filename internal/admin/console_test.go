@@ -18,9 +18,15 @@ var unwrapRe = regexp.MustCompile(`\.result\s*[;,)\n]`)
 // （CPAMC）把整份认证状态存在 localStorage 的 "cli-proxy-auth" 键下，值是可逆
 // 的 XOR 混淆：
 //
-//	前缀 "enc::v1::" + base64( utf8(JSON) XOR key )
-//	key = utf8("cli-proxy-api-webui::secure-storage|<host>|<userAgent>")
-//	JSON = {"state":{...,"managementKey":"<密钥>",...},"version":N}
+//	前缀 "enc::v2::" + base64( utf8(JSON) XOR key )   （CPA 8.0.48 起）
+//	前缀 "enc::v1::" + base64( utf8(JSON) XOR key )   （旧版，仍须兼容）
+//	key(v2) = utf8("cli-proxy-api-webui::secure-storage|<host>")
+//	key(v1) = utf8("cli-proxy-api-webui::secure-storage|<host>|<userAgent>")
+//	JSON    = {"state":{...,"managementKey":"<密钥>",...},"version":N}
+//
+// 面板 8.0.48 把派生密钥里的 userAgent 去掉并升到 v2 前缀（浏览器升级后
+// 不会再解出乱码），读取端两种前缀都认。本页若只认 v1，用户明明勾了
+// 「记住密码」也会看到「未检测到可用的管理密钥」。
 //
 // 密钥由公开值派生，所以同源页面能解出来。这里断言页面确实实现了这套算法
 // （算法细节若与面板不一致，用户会看到 401 且原因极难定位）。
@@ -29,7 +35,9 @@ func TestConsolePageDecodesPanelKey(t *testing.T) {
 
 	// 混淆格式与快照字段必须与面板一致。
 	for _, literal := range []string{
-		`"enc::v1::"`,                            // 前缀
+		`"enc::v1::"`,                            // 旧前缀（必须继续兼容）
+		`"enc::v2::"`,                            // 新前缀（8.0.48 起面板写这个）
+		`var OBF_PREFIX_V2`,                      // 双前缀分支必须真的存在
 		`"cli-proxy-api-webui::secure-storage"`,  // 种子
 		`var PANEL_STORE_KEY = "cli-proxy-auth"`, // 面板的存储键名
 		`var PANEL_KEY_FIELD = "managementKey"`,  // 密钥在快照里的字段名
