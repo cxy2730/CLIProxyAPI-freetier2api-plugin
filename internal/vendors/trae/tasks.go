@@ -11,8 +11,11 @@ package trae
 // 额度（仅国内版）：POST pay/ide_user_ent_usage 取权益包列表，
 // 只统计 product_type=2 的积分包（credits_limit=-1 表示无限）。
 //
-// 活动福利（仅国内版）：签到之外还有 6 个领奖入口（竞赛 / 联合活动 / 抽奖 /
-// 两个分享裂变 / 兑换码），详见文件末尾的 UGActions 与 ClaimUG。
+// 活动福利（仅国内版）：签到之外还有 5 个无需输入的领奖入口（竞赛 / 联合
+// 活动 / 抽奖 / 两个分享裂变），详见文件末尾的 UGActions 与 ClaimUG。
+//
+// 兑换码需要用户输入，而手动触发路由只传任务族名、没有请求体通道，故不提供
+// 入口——留着实现却调不到，只会是死代码。
 
 import (
 	"bytes"
@@ -161,23 +164,39 @@ func claimCheckinCredits(ctx context.Context, cfg Config, headers map[string]str
 	return lastErr
 }
 
-func postCheckin(ctx context.Context, url string, headers map[string]string) ([]byte, error) {
-	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader([]byte("{}")))
+// postJSON 发一次 JSON POST 并返回状态码与响应体（读上限 1MB）。
+//
+// 签到、额度、活动三个端点用的是同一套官方客户端头、同一个超时，只是对非
+// 200 的处理不同（签到/额度要分类上抛，活动要把 body 里的原因带出来）——
+// 所以这里只负责传输，语义留给调用方。
+func postJSON(ctx context.Context, url string, headers map[string]string, payload []byte) (int, []byte, error) {
+	if payload == nil {
+		payload = []byte("{}")
+	}
+	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if errReq != nil {
-		return nil, errReq
+		return 0, nil, errReq
 	}
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
-	client := hostbridge.Client(ctx, 30*time.Second)
-	resp, errDo := client.Do(req)
+	resp, errDo := hostbridge.Client(ctx, 30*time.Second).Do(req)
 	if errDo != nil {
-		return nil, fmt.Errorf("trae checkin request failed: %w", errDo)
+		return 0, nil, fmt.Errorf("trae request failed: %w", errDo)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusOK {
-		return nil, Classify(resp.StatusCode, string(body))
+	return resp.StatusCode, body, nil
+}
+
+// postCheckin 是签到端点的语义层：非 200 一律分类上抛。
+func postCheckin(ctx context.Context, url string, headers map[string]string) ([]byte, error) {
+	status, body, errPost := postJSON(ctx, url, headers, nil)
+	if errPost != nil {
+		return nil, errPost
+	}
+	if status != http.StatusOK {
+		return nil, Classify(status, string(body))
 	}
 	return body, nil
 }
@@ -337,24 +356,12 @@ func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.Q
 	if errBody != nil {
 		return nil, errBody
 	}
-	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, cfg.QuotaHost+cfg.QuotaPath, bytes.NewReader(payload))
-	if errReq != nil {
-		return nil, errReq
+	status, body, errPost := postJSON(ctx, cfg.QuotaHost+cfg.QuotaPath, quotaHeaders(cred), payload)
+	if errPost != nil {
+		return nil, errPost
 	}
-	for key, value := range quotaHeaders(cred) {
-		req.Header.Set(key, value)
-	}
-
-	client := hostbridge.Client(ctx, 30*time.Second)
-	resp, errDo := client.Do(req)
-	if errDo != nil {
-		return nil, fmt.Errorf("trae quota request failed: %w", errDo)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode >= 400 {
-		return nil, Classify(resp.StatusCode, string(body))
+	if status >= 400 {
+		return nil, Classify(status, string(body))
 	}
 
 	var result struct {
@@ -423,8 +430,6 @@ const (
 	EpUGCompetitionClaim = "/trae/api/v2/ug/competition/claim_package"
 	// EpUGCobrandClaim 领取联合品牌（联合会员/联名活动）奖励。
 	EpUGCobrandClaim = "/trae/api/v2/ug/cobrand/claim"
-	// EpPayRedeemCode 兑换兑换码。
-	EpPayRedeemCode = "/trae/api/v2/pay/redeem_code/redeem"
 	// EpUGWorkLotteryDraw 抽奖（作品活动）。
 	EpUGWorkLotteryDraw = "/trae/api/v2/ug/work_lottery/draw"
 	// EpUGWorkFissionShare 作品分享裂变（生成分享链接即计一次）。
@@ -441,8 +446,6 @@ type UGAction struct {
 	Label string
 	// Path 是相对签到主机的路径。
 	Path string
-	// NeedsInput 为真表示必须带用户输入（兑换码），不参与批量领取。
-	NeedsInput bool
 }
 
 // UGActions 返回签到之外的全部活动入口。
@@ -456,7 +459,6 @@ func UGActions() []UGAction {
 		{Key: "work_lottery_draw", Label: "作品抽奖", Path: EpUGWorkLotteryDraw},
 		{Key: "work_fission_share", Label: "作品分享奖励", Path: EpUGWorkFissionShare},
 		{Key: "code_fission_share", Label: "代码分享奖励", Path: EpUGCodeFissionShare},
-		{Key: "redeem_code", Label: "兑换码", Path: EpPayRedeemCode, NeedsInput: true},
 	}
 }
 
@@ -508,8 +510,9 @@ func (r UGResult) Describe() string {
 
 // ClaimUG 依次领取全部不需要输入的福利端点。
 //
-// 返回的 results 覆盖所有已尝试的端点；err 只在「凭证整体不可用」时非空
-// （此时后面的端点也不用试了），单个端点失败只体现在它的 UGResult 上。
+// 返回的 results 覆盖所有已尝试的端点；err 只在「这一轮不该继续」时非空
+// （凭证失效 401、或整轮 60s 超时/被取消），单个端点失败只体现在它的
+// UGResult 上。
 func ClaimUG(ctx context.Context, cred *Credential, cfg Config) ([]UGResult, error) {
 	if cred == nil || strings.TrimSpace(cred.AccessToken) == "" {
 		return nil, fmt.Errorf("trae: 缺少访问令牌，无法领取活动奖励")
@@ -522,74 +525,72 @@ func ClaimUG(ctx context.Context, cred *Credential, cfg Config) ([]UGResult, err
 	if errHeaders != nil {
 		return nil, errHeaders
 	}
+	// 整轮 60s 上限：5 个端点各 30s 串行，最坏能拖到两分半，宿主的排程窗口
+	// 会被一次慢上游占满。超时与取消一样：把已拿到的结果带出去。
+	ctx, cancel := context.WithTimeout(ctx, ugRoundTimeout)
+	defer cancel()
+
 	results := make([]UGResult, 0, len(UGActions()))
 	for _, action := range UGActions() {
-		if action.NeedsInput {
-			// 兑换码必须由用户提供，批量领取跳过（见 RedeemUGCode）。
-			continue
-		}
 		if errCtx := ctx.Err(); errCtx != nil {
-			// 取消：不再打后续端点，但把已拿到的结果带出去。
 			return results, errCtx
 		}
-		result := claimUGOne(ctx, cfg, headers, action, nil)
+		result, errStop := claimUGOne(ctx, cfg, headers, action)
 		results = append(results, result)
-		if errCtx := ctx.Err(); errCtx != nil {
-			return results, errCtx
+		if errStop != nil {
+			// 凭证失效：后面的端点只会得到同一个 401，停在这里并如实上报。
+			return results, errStop
 		}
 	}
 	return results, nil
 }
 
-// RedeemUGCode 提交一个兑换码。
-//
-// 兑换码是用户手里的一次性凭证，无法批量获取，所以单独成函数而不是塞进
-// ClaimUG 的批量里。
-func RedeemUGCode(ctx context.Context, cred *Credential, cfg Config, code string) (UGResult, error) {
-	code = strings.TrimSpace(code)
-	if code == "" {
-		return UGResult{}, fmt.Errorf("trae: 兑换码不能为空")
-	}
-	if cred == nil || strings.TrimSpace(cred.AccessToken) == "" {
-		return UGResult{}, fmt.Errorf("trae: 缺少访问令牌，无法兑换")
-	}
-	if !cfg.supportsCheckin() {
-		return UGResult{}, fmt.Errorf("trae: 当前区域不支持兑换码")
-	}
-	headers, errHeaders := checkinHeaders(cred)
-	if errHeaders != nil {
-		return UGResult{}, errHeaders
-	}
-	action := UGAction{Key: "redeem_code", Label: "兑换码", Path: EpPayRedeemCode, NeedsInput: true}
-	// 字段名按官方前端（pay/redeem_code/redeem）的入参形态。
-	payload, _ := json.Marshal(map[string]string{"redeem_code": code})
-	return claimUGOne(ctx, cfg, headers, action, payload), nil
-}
+// ugRoundTimeout 是一轮活动福利领取的总上限。
+const ugRoundTimeout = 60 * time.Second
 
 // claimUGOne 打一个端点并归类结果。
-func claimUGOne(ctx context.Context, cfg Config, headers map[string]string, action UGAction, payload []byte) UGResult {
+//
+// 第二个返回值只在「这一轮不该继续」时非空（凭证失效），其余失败只体现在
+// UGResult 上：单个活动不可领不影响后面的端点。
+func claimUGOne(ctx context.Context, cfg Config, headers map[string]string, action UGAction) (UGResult, error) {
 	result := UGResult{Key: action.Key, Label: action.Label}
-	status, body, errDo := postUG(ctx, cfg.CheckinHost+action.Path, headers, payload)
+	status, body, errDo := postJSON(ctx, cfg.CheckinHost+action.Path, headers, nil)
 	if errDo != nil {
 		result.Status = UGFailed
 		result.Message = errDo.Error()
-		return result
+		return result, nil
 	}
+	if status == http.StatusUnauthorized {
+		// 凭证失效：后面的端点只会得到同一个 401。用分类错误上抛，宿主据此
+		// 把账号标成需要重新登录，而不是报一个无法归因的 502。
+		result.Status = UGFailed
+		result.Message = "登录态已失效（HTTP 401），请重新登录后再领取"
+		return result, &core.Failure{Kind: core.FailureKindCredential, Status: status, Msg: result.Message}
+	}
+	// Code 用指针：网关回 HTML、空 body、或 {"data":{}} 时它会是 nil，此时
+	// 绝不能把零值当成 code=0（那会把失败报成「已领取」）。
 	var envelope struct {
-		Code    int    `json:"code"`
+		Code    *int   `json:"code"`
 		Message string `json:"message"`
 		Msg     string `json:"msg"`
 	}
-	_ = json.Unmarshal(body, &envelope)
-	result.Code = envelope.Code
+	if errJSON := json.Unmarshal(body, &envelope); errJSON != nil || envelope.Code == nil {
+		result.Status = UGFailed
+		result.Message = truncateBody(string(body))
+		if result.Message == "" {
+			result.Message = fmt.Sprintf("HTTP %d：响应不含业务码", status)
+		}
+		return result, nil
+	}
+	result.Code = *envelope.Code
 	result.Message = core.FirstNonEmpty(strings.TrimSpace(envelope.Message), strings.TrimSpace(envelope.Msg))
 	switch {
-	case status == http.StatusOK && envelope.Code == 0:
+	case status == http.StatusOK && *envelope.Code == 0:
 		result.Status = UGClaimed
 	case status == http.StatusOK:
 		result.Status = classifyUGMessage(result.Message)
 	default:
-		// 非 200：401/4001 是凭证失效，其余按失败报，原始码与文案原样带出。
+		// 非 200：按失败报，原始码与文案原样带出。
 		result.Status = UGFailed
 		if result.Message == "" {
 			if failure := Classify(status, string(body)); failure != nil {
@@ -600,8 +601,27 @@ func claimUGOne(ctx context.Context, cfg Config, headers map[string]string, acti
 			result.Message = fmt.Sprintf("HTTP %d", status)
 		}
 	}
-	return result
+	return result, nil
 }
+
+// truncateBody 把非 JSON 响应压成一行短提示，避免把整页 HTML 塞进横幅。
+func truncateBody(body string) string {
+	trimmed := strings.TrimSpace(body)
+	if trimmed == "" {
+		return ""
+	}
+	if runes := []rune(trimmed); len(runes) > 120 {
+		return string(runes[:120]) + "…"
+	}
+	return trimmed
+}
+
+// 上游不会给出稳定的码表，只能按文案粗分；标记表放在包级只读变量里，
+// 避免每次调用都分配一次切片。
+var (
+	ugAlreadyMarkers     = []string{"已领取", "已经领取", "重复领取", "已参与", "已经参与", "已兑换", "已经兑换", "already"}
+	ugUnavailableMarkers = []string{"未开始", "已结束", "活动结束", "未参与", "不满足", "无资格", "不在活动", "not started", "ended"}
+)
 
 // classifyUGMessage 按上游文案做粗归类。
 //
@@ -612,47 +632,13 @@ func classifyUGMessage(message string) UGStatus {
 	case text == "":
 		// 非 0 码却没给文案：当成失败，让人能看到原始码。
 		return UGFailed
-	case containsAny(text, "已领取", "已经领取", "重复领取", "已参与", "已经参与", "已兑换", "已经兑换", "already"):
+	case core.ContainsAny(text, ugAlreadyMarkers):
 		return UGAlready
-	case containsAny(text, "未开始", "已结束", "活动结束", "未参与", "不满足", "无资格", "不在活动", "not started", "ended"):
+	case core.ContainsAny(text, ugUnavailableMarkers):
 		return UGUnavailable
 	default:
 		return UGFailed
 	}
-}
-
-func containsAny(text string, needles ...string) bool {
-	for _, needle := range needles {
-		if strings.Contains(text, needle) {
-			return true
-		}
-	}
-	return false
-}
-
-// postUG 发一个 JSON POST，返回状态码与响应体。
-//
-// 与 postCheckin 的区别：非 2xx 也把响应体带回来——活动端点的失败原因就写在
-// body 的 message 里，丢掉它等于把「已领取」报成「失败」。
-func postUG(ctx context.Context, url string, headers map[string]string, payload []byte) (int, []byte, error) {
-	if payload == nil {
-		payload = []byte("{}")
-	}
-	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if errReq != nil {
-		return 0, nil, errReq
-	}
-	for key, value := range headers {
-		req.Header.Set(key, value)
-	}
-	client := hostbridge.Client(ctx, 30*time.Second)
-	resp, errDo := client.Do(req)
-	if errDo != nil {
-		return 0, nil, fmt.Errorf("trae 活动接口请求失败: %w", errDo)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	return resp.StatusCode, body, nil
 }
 
 // SummarizeUG 把一轮结果压成一段给人看的文案。

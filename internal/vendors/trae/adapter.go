@@ -58,12 +58,12 @@ func Instances(env core.Env) []core.Vendor {
 	return out
 }
 
+// newInstance 构造一个 region 实例。
+//
+// profile 的完整性（额度端点、主机、版本号）由 ConfigFor 统一保证，并由
+// TestAllConfigsAreComplete 在测试期锁住——构造函数里不留 panic：供应商构造
+// 失败会把整个插件启动打挂，代价远高于一个可测的静态断言。
 func newInstance(env core.Env, cfg Config, sessions *SessionStore) core.Vendor {
-	// 额度端点由 ConfigFor 保证非空。漏填时请求会打到 host+""，错误退化成 URL
-	// 拼接问题；在构造期直接暴露，比上线后看到一个费解的请求失败好。
-	if cfg.QuotaHost == "" || cfg.QuotaPath == "" {
-		panic("trae: quota endpoint missing for region " + string(cfg.Region))
-	}
 	return &adapter{
 		NativeAdapter: core.NewNativeAdapter(core.NativeSpec[*Credential]{
 			Meta: core.Meta{VendorID: cfg.VendorID, VendorName: cfg.VendorName, VendorRegion: string(cfg.Region)},
@@ -281,12 +281,15 @@ func (v *adapter) SupportsCheckin() bool { return SupportsCheckin(v.profile()) }
 // ---- 任务族 ----
 
 // TaskKindUG 是「活动福利领取」任务族。
-const TaskKindUG = "trae_ug"
+//
+// 族名不带供应商前缀：相邻 vendor 的族名都是 dailybonus / travel 这种，宿主
+// 的排程键也按族名保存，两套命名口径会让配置看起来像两种东西。
+const TaskKindUG = "ug"
 
 // TaskSpecs 声明 Trae 家族自己的任务族。
 //
-// 只声明活动福利这一个族，且刻意不给 DefaultHours：6 个入口是活动期才开的
-// 领奖口，不是每天都有东西可领，默认排程只会每天白打 6 次空请求。需要时在
+// 只声明活动福利这一个族，且刻意不给 DefaultHours：5 个入口是活动期才开的
+// 领奖口，不是每天都有东西可领，默认排程只会每天白打 5 次空请求。需要时在
 // 控制台手动触发（或自己加排程）。国际版没有这套活动，故不声明。
 func (v *adapter) TaskSpecs() []core.TaskSpec {
 	if !v.SupportsCheckin() {
@@ -295,8 +298,12 @@ func (v *adapter) TaskSpecs() []core.TaskSpec {
 	return []core.TaskSpec{{
 		Kind:        TaskKindUG,
 		Label:       "活动福利领取",
-		Description: "领取 Trae 国内版的竞赛 / 联合活动 / 抽奖 / 分享奖励；兑换码请在「兑换码」入口单独提交",
-		Manual:      true,
+		Description: "领取 Trae 国内版的竞赛 / 联合活动 / 抽奖 / 分享奖励",
+		// Route 让控制台按 ManualSpecs 自动出现手动触发入口：宿主只注册带
+		// Route 的手动族（admin 里 Route 为空直接跳过），少了它这个「手动族」
+		// 就只能靠手改排程配置触发。
+		Route:  "/ug/claim",
+		Manual: true,
 	}}
 }
 

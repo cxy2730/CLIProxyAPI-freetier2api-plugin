@@ -826,6 +826,37 @@ func TestClientHeadersByRegion(t *testing.T) {
 	}
 }
 
+// TestAllConfigsAreComplete 锁住 profile 表本身：额度端点与主机一旦漏填，
+// 请求会打到 host+""，错误退化成费解的 URL 拼接失败。这类问题在表里能测出来，
+// 就该在测试里挡住，而不是在构造函数里 panic。
+func TestAllConfigsAreComplete(t *testing.T) {
+	for _, cfg := range AllConfigs() {
+		if cfg.VendorID == "" || cfg.VendorName == "" || cfg.Region == "" {
+			t.Fatalf("实例标识缺失: %+v", cfg)
+		}
+		for name, value := range map[string]string{
+			"ChatHost":    cfg.ChatHost,
+			"AuthHost":    cfg.AuthHost,
+			"RefreshHost": cfg.RefreshHost,
+			"QuotaHost":   cfg.QuotaHost,
+			"QuotaPath":   cfg.QuotaPath,
+			"ConsoleHost": cfg.ConsoleHost,
+			"IDEVersion":  cfg.IDEVersion,
+		} {
+			if value == "" {
+				t.Fatalf("region %s 的 %s 为空", cfg.Region, name)
+			}
+		}
+	}
+	// 国内版有签到活动，国际版没有：这条差异必须显式留在表里。
+	if cfg := ConfigFor(RegionCN); cfg.CheckinHost == "" {
+		t.Fatal("国内版应有签到主机")
+	}
+	if cfg := ConfigFor(RegionGlobal); cfg.CheckinHost != "" {
+		t.Fatal("国际版不应声明签到主机")
+	}
+}
+
 // ---- 刷新 ----
 
 func TestRefreshCredentialParsesResultEnvelope(t *testing.T) {

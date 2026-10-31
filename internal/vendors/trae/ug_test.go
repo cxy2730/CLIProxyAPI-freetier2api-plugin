@@ -2,7 +2,6 @@ package trae
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,27 +32,28 @@ func ugTestConfig(t *testing.T, host string) Config {
 	return testConfig(t, host)
 }
 
-// TestUGActionsRedeemNeedsInput 验证：六个入口里只有兑换码需要用户输入。
-func TestUGActionsRedeemNeedsInput(t *testing.T) {
+// TestUGActionsAreBatchable 验证：批量入口都是「无需输入、可直接 POST」的。
+//
+// 兑换码需要用户提供内容，而手动触发路由只传任务族名、没有请求体入口，所以
+// 那条链路已删除——留着它只会是一个永远调不到的实现。
+func TestUGActionsAreBatchable(t *testing.T) {
 	actions := UGActions()
-	if len(actions) != 6 {
-		t.Fatalf("活动入口数 = %d, 期望 6", len(actions))
+	if len(actions) != 5 {
+		t.Fatalf("活动入口数 = %d, 期望 5", len(actions))
 	}
-	var needInput []string
+	seen := map[string]bool{}
 	for _, action := range actions {
-		if action.NeedsInput {
-			needInput = append(needInput, action.Key)
+		if action.Path == "" || action.Label == "" || action.Key == "" {
+			t.Errorf("%s: key/path/label 不能为空", action.Key)
 		}
-		if action.Path == "" || action.Label == "" {
-			t.Errorf("%s: path/label 不能为空", action.Key)
+		if seen[action.Key] {
+			t.Errorf("入口 key 重复: %s", action.Key)
 		}
-	}
-	if len(needInput) != 1 || needInput[0] != "redeem_code" {
-		t.Errorf("需要输入的入口 = %v, 期望只有 redeem_code", needInput)
+		seen[action.Key] = true
 	}
 }
 
-// TestClaimUGClassifiesEachEndpoint 验证：逐个端点的归类与「兑换码不参与批量」。
+// TestClaimUGClassifiesEachEndpoint 验证：逐个端点的归类。
 func TestClaimUGClassifiesEachEndpoint(t *testing.T) {
 	replies := map[string]struct {
 		status int
@@ -66,7 +66,6 @@ func TestClaimUGClassifiesEachEndpoint(t *testing.T) {
 		EpUGCodeFissionShare: {200, `{"code":3003,"message":"参数错误"}`},
 	}
 	stubHost(t)
-	var hits []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Errorf("%s: method = %s, 期望 POST", r.URL.Path, r.Method)
@@ -77,11 +76,9 @@ func TestClaimUGClassifiesEachEndpoint(t *testing.T) {
 		if got := r.Header.Get("X-Market-User-Id"); got == "" {
 			t.Errorf("%s: 缺少派生的 X-Market-User-Id", r.URL.Path)
 		}
-		hits = append(hits, r.URL.Path)
 		reply, ok := replies[r.URL.Path]
 		if !ok {
-			// 兑换码不应出现在批量领取里。
-			t.Errorf("批量领取打到了 %s", r.URL.Path)
+			t.Errorf("批量领取打到了未知端点 %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -95,7 +92,7 @@ func TestClaimUGClassifiesEachEndpoint(t *testing.T) {
 		t.Fatalf("ClaimUG 返回错误: %v", errClaim)
 	}
 	if len(results) != 5 {
-		t.Fatalf("结果数 = %d, 期望 5（兑换码不参与批量）", len(results))
+		t.Fatalf("结果数 = %d, 期望 5", len(results))
 	}
 	want := map[string]UGStatus{
 		"competition_claim":  UGClaimed,
@@ -105,13 +102,13 @@ func TestClaimUGClassifiesEachEndpoint(t *testing.T) {
 		"code_fission_share": UGFailed,
 	}
 	for _, result := range results {
-		if status, ok := want[result.Key]; ok && result.Status != status {
-			t.Errorf("%s: status = %d, 期望 %d（文案 %q）", result.Key, result.Status, status, result.Message)
+		status, known := want[result.Key]
+		if !known {
+			t.Errorf("出现预期外的入口 key: %s", result.Key)
+			continue
 		}
-	}
-	for _, path := range hits {
-		if path == EpPayRedeemCode {
-			t.Error("兑换码端点不应被批量领取调用")
+		if result.Status != status {
+			t.Errorf("%s: status = %d, 期望 %d（文案 %q）", result.Key, result.Status, status, result.Message)
 		}
 	}
 }
@@ -159,38 +156,54 @@ func TestClaimUGRejectsGlobalRegion(t *testing.T) {
 	}
 }
 
-// TestRedeemUGCodePostsCode 验证：兑换码走单独入口并带上 redeem_code。
-func TestRedeemUGCodePostsCode(t *testing.T) {
-	stubHost(t)
-	var gotPath string
-	var gotBody map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"code":0,"message":"兑换成功"}`))
-	}))
-	defer server.Close()
-
-	result, errRedeem := RedeemUGCode(context.Background(), ugTestCredential(), ugTestConfig(t, server.URL), "  ABC-123 ")
-	if errRedeem != nil {
-		t.Fatalf("兑换返回错误: %v", errRedeem)
-	}
-	if gotPath != EpPayRedeemCode {
-		t.Errorf("path = %q, 期望 %q", gotPath, EpPayRedeemCode)
-	}
-	if code, _ := gotBody["redeem_code"].(string); code != "ABC-123" {
-		t.Errorf("redeem_code = %v, 期望 ABC-123（两端空白应被裁掉）", gotBody["redeem_code"])
-	}
-	if result.Status != UGClaimed {
-		t.Errorf("status = %d, 期望 UGClaimed", result.Status)
+// TestClaimUGTreatsNonJSONAsFailure 锁住「200 + 非 JSON ≠ 已领取」。
+//
+// 网关超时页、空 body、{"data":{}} 都没有 code 字段；按零值当成 code=0 会把
+// 失败报成「已领取」，用户以为领到了，实际什么都没有。
+func TestClaimUGTreatsNonJSONAsFailure(t *testing.T) {
+	for _, body := range []string{"<html>502 Bad Gateway</html>", "", `{"data":{}}`} {
+		stubHost(t)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(body))
+		}))
+		results, errClaim := ClaimUG(context.Background(), ugTestCredential(), ugTestConfig(t, server.URL))
+		server.Close()
+		if errClaim != nil {
+			t.Fatalf("body=%q: 不该中止整轮: %v", body, errClaim)
+		}
+		for _, result := range results {
+			if result.Status != UGFailed {
+				t.Fatalf("body=%q: %s status = %d, 期望 UGFailed", body, result.Key, result.Status)
+			}
+			if strings.TrimSpace(result.Message) == "" {
+				t.Fatalf("body=%q: %s 失败时必须带原因", body, result.Key)
+			}
+		}
 	}
 }
 
-// TestRedeemUGCodeRejectsEmpty 验证：空兑换码不发请求。
-func TestRedeemUGCodeRejectsEmpty(t *testing.T) {
-	if _, errRedeem := RedeemUGCode(context.Background(), ugTestCredential(), ugTestConfig(t, "https://example.invalid"), "   "); errRedeem == nil {
-		t.Fatal("空兑换码应报错")
+// TestClaimUGStopsOnUnauthorized 锁住「401 立刻停」：后面的端点只会得到同一个
+// 401，继续打只会让日志更难读；已拿到的结果仍要带出去。
+func TestClaimUGStopsOnUnauthorized(t *testing.T) {
+	stubHost(t)
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"code":1001,"message":"unauthorized"}`))
+	}))
+	defer server.Close()
+
+	results, errClaim := ClaimUG(context.Background(), ugTestCredential(), ugTestConfig(t, server.URL))
+	if errClaim == nil {
+		t.Fatal("401 应中止整轮并上报错误")
+	}
+	if calls != 1 {
+		t.Fatalf("401 后不应继续请求，实际打了 %d 个端点", calls)
+	}
+	if len(results) != 1 || results[0].Status != UGFailed {
+		t.Fatalf("应带回首个失败结果: %+v", results)
 	}
 }
 
@@ -252,6 +265,14 @@ func TestTaskSpecsFollowRegion(t *testing.T) {
 	}
 	if specs[0].Label == "" || specs[0].Description == "" {
 		t.Error("任务族必须带中文标签与说明")
+	}
+	// 宿主只为「Route 非空」的手动族注册管理路由；没有 Route 的手动族在控制台
+	// 根本没有触发入口，等于声明了却做不到。
+	if specs[0].Route == "" {
+		t.Error("手动族必须带 Route，否则控制台没有触发入口")
+	}
+	if TaskKindUG != "ug" {
+		t.Errorf("族名 = %q, 期望与相邻 vendor 一致的 %q", TaskKindUG, "ug")
 	}
 
 	global := &adapter{config: ConfigFor(RegionGlobal)}

@@ -57,6 +57,11 @@ func TestVendorRegistryCompatibility(t *testing.T) {
 //
 // 能力由「是否实现可选接口」表达：任何一家多实现/漏实现都会改变控制台入口、
 // 额度/签到行为或任务调度，必须显式确认。
+// isPlatformTaskKind 报告该任务族是否由平台专用路由触发（不需要 spec.Route）。
+func isPlatformTaskKind(kind string) bool {
+	return kind == core.TaskKindKeepalive || kind == core.TaskKindCheckin
+}
+
 func TestVendorCapabilities(t *testing.T) {
 	installFakeHost(t)
 	setupTestPlugin(t)
@@ -85,11 +90,13 @@ func TestVendorCapabilities(t *testing.T) {
 		"qoderglobal":       {credits: true, login: true, refresh: true, quota: true, checkin: true, models: true, merge: true, configure: true},
 		"raccoon":           {credits: true, login: true, refresh: true, quota: true, checkin: true, models: true, merge: true, configure: true},
 		"traecn":            {credits: true, login: true, refresh: true, quota: true, checkin: true, tasks: true, merge: true, configure: true},
-		"traeglobal":        {credits: true, login: true, refresh: true, quota: true, checkin: true, tasks: true, merge: true, configure: true},
-		"workbuddycn":       {credits: true, login: true, refresh: true, quota: true, checkin: true, tasks: true, models: true, merge: true, configure: true, console: true},
-		"workbuddyglobal":   {credits: true, login: true, refresh: true, quota: true, checkin: true, tasks: true, models: true, merge: true, configure: true, console: true},
-		"zcodecn":           {login: true, refresh: true, quota: true, merge: true, configure: true, authMode: "oauth"},
-		"zcodeglobal":       {login: true, refresh: true, quota: true, merge: true, configure: true, authMode: "oauth"},
+		// tasks 是「接口能力」而不是「本区域有族」：国际版实现了 TaskCatalogProvider
+		// 但 TaskSpecs() 返回空（活动福利只在国内版），与 checkin 同一种约定。
+		"traeglobal":      {credits: true, login: true, refresh: true, quota: true, checkin: true, tasks: true, merge: true, configure: true},
+		"workbuddycn":     {credits: true, login: true, refresh: true, quota: true, checkin: true, tasks: true, models: true, merge: true, configure: true, console: true},
+		"workbuddyglobal": {credits: true, login: true, refresh: true, quota: true, checkin: true, tasks: true, models: true, merge: true, configure: true, console: true},
+		"zcodecn":         {login: true, refresh: true, quota: true, merge: true, configure: true, authMode: "oauth"},
+		"zcodeglobal":     {login: true, refresh: true, quota: true, merge: true, configure: true, authMode: "oauth"},
 	}
 	for _, vendor := range testApp.Registry().Vendors() {
 		expected, okCase := cases[vendor.ID()]
@@ -121,6 +128,19 @@ func TestVendorCapabilities(t *testing.T) {
 		// 支持签到必须有接口；有接口但本区域不支持是合法的（如 MiniMax 国内版）。
 		if core.SupportsCheckin(vendor) && !hasCheckin {
 			t.Fatalf("vendor %s reports checkin without implementing CheckinProvider", vendor.ID())
+		}
+		// 任务族同理允许区域空集；但声明出来的族必须可用：Kind 非空，手动族
+		// 必须带 Route（宿主只给非空 Route 注册管理路由）。
+		if catalog, okCatalog := core.As[core.TaskCatalogProvider](vendor); okCatalog {
+			for _, spec := range catalog.TaskSpecs() {
+				if spec.Kind == "" {
+					t.Fatalf("vendor %s declares a task spec without kind", vendor.ID())
+				}
+				// 平台级任务族（保活）由宿主的专用路由触发，不走 spec.Route。
+				if spec.Manual && spec.Route == "" && !isPlatformTaskKind(spec.Kind) {
+					t.Fatalf("vendor %s 手动任务族 %q 缺少 Route，控制台不会有触发入口", vendor.ID(), spec.Kind)
+				}
+			}
 		}
 	}
 }
