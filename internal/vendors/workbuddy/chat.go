@@ -557,10 +557,10 @@ const (
 // 出站标识内置值。都允许被配置覆盖。
 //
 // 版本号与正版 5.8.3 对齐（UA 三段式取自 daemon.log 头 dump：
-// WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0）。
+// WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.179.0）。
 const (
 	defaultClientVersion = "5.8.3"
-	defaultCLIVersion    = "2.161.0"
+	defaultCLIVersion    = "2.179.0"
 	defaultClientName    = "WorkBuddy"
 	// DesktopClientVersion 是桌面指纹族使用的版本（与 CLI 族刻意不同）。
 	// 导出供 tasks 子包构造桌面指纹事件使用。

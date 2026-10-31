@@ -10,6 +10,9 @@ package trae
 //
 // 额度（仅国内版）：POST pay/ide_user_ent_usage 取权益包列表，
 // 只统计 product_type=2 的积分包（credits_limit=-1 表示无限）。
+//
+// 活动福利（仅国内版）：签到之外还有 6 个领奖入口（竞赛 / 联合活动 / 抽奖 /
+// 两个分享裂变 / 兑换码），详见文件末尾的 UGActions 与 ClaimUG。
 
 import (
 	"bytes"
@@ -413,4 +416,265 @@ func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.Q
 			{Key: "credit_used", Label: "已用积分", Value: used, Unit: "credits"},
 		},
 	}, nil
+}
+
+const (
+	// EpUGCompetitionClaim 领取竞赛奖励。
+	EpUGCompetitionClaim = "/trae/api/v2/ug/competition/claim_package"
+	// EpUGCobrandClaim 领取联合品牌（联合会员/联名活动）奖励。
+	EpUGCobrandClaim = "/trae/api/v2/ug/cobrand/claim"
+	// EpPayRedeemCode 兑换兑换码。
+	EpPayRedeemCode = "/trae/api/v2/pay/redeem_code/redeem"
+	// EpUGWorkLotteryDraw 抽奖（作品活动）。
+	EpUGWorkLotteryDraw = "/trae/api/v2/ug/work_lottery/draw"
+	// EpUGWorkFissionShare 作品分享裂变（生成分享链接即计一次）。
+	EpUGWorkFissionShare = "/trae/api/v2/ug/work_fission/share_link"
+	// EpUGCodeFissionShare 代码分享裂变。
+	EpUGCodeFissionShare = "/trae/api/v2/ug/code_fission/share_link"
+)
+
+// UGAction 描述一个福利端点。
+type UGAction struct {
+	// Key 是稳定标识（落日志/前端过滤用），不随文案变。
+	Key string
+	// Label 是给人看的中文名。
+	Label string
+	// Path 是相对签到主机的路径。
+	Path string
+	// NeedsInput 为真表示必须带用户输入（兑换码），不参与批量领取。
+	NeedsInput bool
+}
+
+// UGActions 返回签到之外的全部活动入口。
+//
+// 顺序即执行顺序：先领奖类（幂等、领到就是领到），后裂变类（会生成分享
+// 链接，放在最后，避免它失败时挡住真正的领奖）。
+func UGActions() []UGAction {
+	return []UGAction{
+		{Key: "competition_claim", Label: "竞赛奖励", Path: EpUGCompetitionClaim},
+		{Key: "cobrand_claim", Label: "联合活动奖励", Path: EpUGCobrandClaim},
+		{Key: "work_lottery_draw", Label: "作品抽奖", Path: EpUGWorkLotteryDraw},
+		{Key: "work_fission_share", Label: "作品分享奖励", Path: EpUGWorkFissionShare},
+		{Key: "code_fission_share", Label: "代码分享奖励", Path: EpUGCodeFissionShare},
+		{Key: "redeem_code", Label: "兑换码", Path: EpPayRedeemCode, NeedsInput: true},
+	}
+}
+
+// UGStatus 是一次领取的归类。
+type UGStatus int
+
+const (
+	// UGClaimed 表示上游接受了本次调用（含「已领过」，上游对幂等端点同样回 0）。
+	UGClaimed UGStatus = iota
+	// UGAlready 表示上游明确说之前领过。
+	UGAlready
+	// UGUnavailable 表示活动未开始 / 已结束 / 当前账号不满足条件。
+	UGUnavailable
+	// UGFailed 表示调用失败或上游报错，需要人看一眼。
+	UGFailed
+)
+
+// UGResult 是单个端点的领取结果。
+type UGResult struct {
+	Key     string   `json:"key"`
+	Label   string   `json:"label"`
+	Status  UGStatus `json:"status"`
+	Code    int      `json:"code"`
+	Message string   `json:"message,omitempty"`
+}
+
+// Describe 返回一行中文文案，供控制台展示。
+func (r UGResult) Describe() string {
+	switch r.Status {
+	case UGClaimed:
+		if detail := strings.TrimSpace(r.Message); detail != "" {
+			return fmt.Sprintf("%s：已领取（%s）", r.Label, detail)
+		}
+		return fmt.Sprintf("%s：已领取", r.Label)
+	case UGAlready:
+		return fmt.Sprintf("%s：此前已领取", r.Label)
+	case UGUnavailable:
+		if detail := strings.TrimSpace(r.Message); detail != "" {
+			return fmt.Sprintf("%s：暂不可领（%s）", r.Label, detail)
+		}
+		return fmt.Sprintf("%s：暂不可领", r.Label)
+	default:
+		if detail := strings.TrimSpace(r.Message); detail != "" {
+			return fmt.Sprintf("%s：失败（%s）", r.Label, detail)
+		}
+		return fmt.Sprintf("%s：失败", r.Label)
+	}
+}
+
+// ClaimUG 依次领取全部不需要输入的福利端点。
+//
+// 返回的 results 覆盖所有已尝试的端点；err 只在「凭证整体不可用」时非空
+// （此时后面的端点也不用试了），单个端点失败只体现在它的 UGResult 上。
+func ClaimUG(ctx context.Context, cred *Credential, cfg Config) ([]UGResult, error) {
+	if cred == nil || strings.TrimSpace(cred.AccessToken) == "" {
+		return nil, fmt.Errorf("trae: 缺少访问令牌，无法领取活动奖励")
+	}
+	if !cfg.supportsCheckin() {
+		// UG 接口只在国内版存在；国际版没有这套活动。
+		return nil, fmt.Errorf("trae: 当前区域不支持活动福利领取")
+	}
+	headers, errHeaders := checkinHeaders(cred)
+	if errHeaders != nil {
+		return nil, errHeaders
+	}
+	results := make([]UGResult, 0, len(UGActions()))
+	for _, action := range UGActions() {
+		if action.NeedsInput {
+			// 兑换码必须由用户提供，批量领取跳过（见 RedeemUGCode）。
+			continue
+		}
+		if errCtx := ctx.Err(); errCtx != nil {
+			// 取消：不再打后续端点，但把已拿到的结果带出去。
+			return results, errCtx
+		}
+		result := claimUGOne(ctx, cfg, headers, action, nil)
+		results = append(results, result)
+		if errCtx := ctx.Err(); errCtx != nil {
+			return results, errCtx
+		}
+	}
+	return results, nil
+}
+
+// RedeemUGCode 提交一个兑换码。
+//
+// 兑换码是用户手里的一次性凭证，无法批量获取，所以单独成函数而不是塞进
+// ClaimUG 的批量里。
+func RedeemUGCode(ctx context.Context, cred *Credential, cfg Config, code string) (UGResult, error) {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return UGResult{}, fmt.Errorf("trae: 兑换码不能为空")
+	}
+	if cred == nil || strings.TrimSpace(cred.AccessToken) == "" {
+		return UGResult{}, fmt.Errorf("trae: 缺少访问令牌，无法兑换")
+	}
+	if !cfg.supportsCheckin() {
+		return UGResult{}, fmt.Errorf("trae: 当前区域不支持兑换码")
+	}
+	headers, errHeaders := checkinHeaders(cred)
+	if errHeaders != nil {
+		return UGResult{}, errHeaders
+	}
+	action := UGAction{Key: "redeem_code", Label: "兑换码", Path: EpPayRedeemCode, NeedsInput: true}
+	// 字段名按官方前端（pay/redeem_code/redeem）的入参形态。
+	payload, _ := json.Marshal(map[string]string{"redeem_code": code})
+	return claimUGOne(ctx, cfg, headers, action, payload), nil
+}
+
+// claimUGOne 打一个端点并归类结果。
+func claimUGOne(ctx context.Context, cfg Config, headers map[string]string, action UGAction, payload []byte) UGResult {
+	result := UGResult{Key: action.Key, Label: action.Label}
+	status, body, errDo := postUG(ctx, cfg.CheckinHost+action.Path, headers, payload)
+	if errDo != nil {
+		result.Status = UGFailed
+		result.Message = errDo.Error()
+		return result
+	}
+	var envelope struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Msg     string `json:"msg"`
+	}
+	_ = json.Unmarshal(body, &envelope)
+	result.Code = envelope.Code
+	result.Message = core.FirstNonEmpty(strings.TrimSpace(envelope.Message), strings.TrimSpace(envelope.Msg))
+	switch {
+	case status == http.StatusOK && envelope.Code == 0:
+		result.Status = UGClaimed
+	case status == http.StatusOK:
+		result.Status = classifyUGMessage(result.Message)
+	default:
+		// 非 200：401/4001 是凭证失效，其余按失败报，原始码与文案原样带出。
+		result.Status = UGFailed
+		if result.Message == "" {
+			if failure := Classify(status, string(body)); failure != nil {
+				result.Message = failure.Msg
+			}
+		}
+		if result.Message == "" {
+			result.Message = fmt.Sprintf("HTTP %d", status)
+		}
+	}
+	return result
+}
+
+// classifyUGMessage 按上游文案做粗归类。
+//
+// 不猜业务码：码表随活动变，猜错会把「已领过」显示成失败，反而误导。
+func classifyUGMessage(message string) UGStatus {
+	text := strings.ToLower(message)
+	switch {
+	case text == "":
+		// 非 0 码却没给文案：当成失败，让人能看到原始码。
+		return UGFailed
+	case containsAny(text, "已领取", "已经领取", "重复领取", "已参与", "已经参与", "已兑换", "已经兑换", "already"):
+		return UGAlready
+	case containsAny(text, "未开始", "已结束", "活动结束", "未参与", "不满足", "无资格", "不在活动", "not started", "ended"):
+		return UGUnavailable
+	default:
+		return UGFailed
+	}
+}
+
+func containsAny(text string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// postUG 发一个 JSON POST，返回状态码与响应体。
+//
+// 与 postCheckin 的区别：非 2xx 也把响应体带回来——活动端点的失败原因就写在
+// body 的 message 里，丢掉它等于把「已领取」报成「失败」。
+func postUG(ctx context.Context, url string, headers map[string]string, payload []byte) (int, []byte, error) {
+	if payload == nil {
+		payload = []byte("{}")
+	}
+	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if errReq != nil {
+		return 0, nil, errReq
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	client := hostbridge.Client(ctx, 30*time.Second)
+	resp, errDo := client.Do(req)
+	if errDo != nil {
+		return 0, nil, fmt.Errorf("trae 活动接口请求失败: %w", errDo)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	return resp.StatusCode, body, nil
+}
+
+// SummarizeUG 把一轮结果压成一段给人看的文案。
+func SummarizeUG(results []UGResult) string {
+	if len(results) == 0 {
+		return "没有可领取的活动入口"
+	}
+	parts := make([]string, 0, len(results))
+	var claimed, already, unavailable, failed int
+	for _, result := range results {
+		switch result.Status {
+		case UGClaimed:
+			claimed++
+		case UGAlready:
+			already++
+		case UGUnavailable:
+			unavailable++
+		default:
+			failed++
+		}
+		parts = append(parts, result.Describe())
+	}
+	head := fmt.Sprintf("活动福利：领到 %d 项，此前已领 %d 项，暂不可领 %d 项，失败 %d 项", claimed, already, unavailable, failed)
+	return head + "；" + strings.Join(parts, "；")
 }

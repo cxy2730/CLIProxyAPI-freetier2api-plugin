@@ -76,7 +76,7 @@ func ApplyClientHeaders(req *http.Request) {
 const grantClientPlatform = "desktop-windows"
 
 // grantClientVersion 是登录奖励接口使用的客户端版本（带 v 前缀）。
-const grantClientVersion = "v1.0.35"
+const grantClientVersion = "v1.0.38"
 
 // ApplyGrantHeaders 写入登录奖励接口的客户端识别头。
 //

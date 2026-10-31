@@ -154,7 +154,7 @@ const (
 	RegisterPath = "/auth/register"
 
 	// DefaultClientVersion 是伪装用的 Cline 客户端版本。
-	DefaultClientVersion = "3.0.47"
+	DefaultClientVersion = "3.0.74"
 	// DefaultCoreVersion 是伪装用的 Cline 内核版本。
 	DefaultCoreVersion = "0.0.66"
 )

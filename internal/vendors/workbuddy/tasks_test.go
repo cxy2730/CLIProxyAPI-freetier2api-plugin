@@ -58,10 +58,21 @@ func TestDailyBonusBeaconEventShape(t *testing.T) {
 	if againConversation == conversation {
 		t.Fatal("each beacon must mint a fresh conversation id (day looks like a new conversation)")
 	}
-	// 零值切片字段必须存在（上游要求字段在，哪怕为空）。
-	for _, key := range []string{"mentionContexts", "knowledgeId", "knowledgeName"} {
-		if _, ok := event[key].([]any); !ok {
-			t.Fatalf("%s must be present as an array, got %T", key, event[key])
+	// 零值字段必须存在（上游要求字段在，哪怕为空）。
+	if _, ok := event["mentionContexts"].([]any); !ok {
+		t.Fatalf("mentionContexts must be present as an array, got %T", event["mentionContexts"])
+	}
+	// knowledgeId / knowledgeName 按官方客户端抓包用空字符串：同一 eventCode
+	// 的另外三处 payload（credential.go 的会话序列）都是字符串，这里曾经写成
+	// 空数组。上游两种都收，但类型分叉意味着任何一次 schema 收紧都只会打断
+	// 其中一条路径，故统一到抓包形态。
+	for _, key := range []string{"knowledgeId", "knowledgeName"} {
+		value, ok := event[key].(string)
+		if !ok {
+			t.Fatalf("%s must be present as a string, got %T", key, event[key])
+		}
+		if value != "" {
+			t.Fatalf("%s must be empty, got %q", key, value)
 		}
 	}
 	if event["agentName"] != "default" || event["agentType"] != "conversation" {

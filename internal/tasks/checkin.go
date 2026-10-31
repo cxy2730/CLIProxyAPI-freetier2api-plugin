@@ -97,6 +97,11 @@ func (s *Service) recordCheckinResult(vendor core.Vendor, credential *core.Crede
 			if result.Energy > 0 {
 				record.Energy = result.Energy
 			}
+			// 连签天数由供应商透传；上游没给（0）时保留上一次的值，
+			// 不能用「今天没返回」把已有天数清成 0。
+			if result.Streak > 0 {
+				record.Streak = result.Streak
+			}
 			current.Checkin[uid] = record
 		}
 		pushCheckinHistory(current, key, entry, limit)

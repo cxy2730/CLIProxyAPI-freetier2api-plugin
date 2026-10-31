@@ -272,3 +272,38 @@ func TestCheckinHistoryKeySeparatesVendors(t *testing.T) {
 		}
 	}
 }
+
+// TestRecordCheckinResultPersistsStreak 验证：供应商透传的连签天数会落库，
+// 且上游本次没给（0）时不会被清空。
+//
+// 连签天数此前是断链的：供应商算出来了，适配层丢掉，宿主也没有字段可写，
+// 控制台因此永远显示 0 天。
+func TestRecordCheckinResultPersistsStreak(t *testing.T) {
+	credential := &core.Credential{FileID: "workbuddy-user"}
+	deps := newFakeDeps(time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC))
+	service := &Service{deps: deps}
+	vendor := &fakeCheckinVendor{id: "workbuddyglobal"}
+
+	service.recordCheckinResult(vendor, credential, CheckinTriggerSchedule, &core.CheckinResult{
+		Credit: 120,
+		Streak: 7,
+	})
+	if got := deps.state.Checkin[credential.FileIDValue()].Streak; got != 7 {
+		t.Fatalf("连签天数 = %d, 期望 7", got)
+	}
+
+	// 上游本次没给天数：保留上一次的值，不能清成 0。
+	service.recordCheckinResult(vendor, credential, CheckinTriggerSchedule, &core.CheckinResult{Credit: 120})
+	if got := deps.state.Checkin[credential.FileIDValue()].Streak; got != 7 {
+		t.Errorf("上游未给天数时连签 = %d, 期望保留 7", got)
+	}
+
+	// 上游给了新值：覆盖。
+	service.recordCheckinResult(vendor, credential, CheckinTriggerSchedule, &core.CheckinResult{
+		Already: true,
+		Streak:  8,
+	})
+	if got := deps.state.Checkin[credential.FileIDValue()].Streak; got != 8 {
+		t.Errorf("连签天数 = %d, 期望 8", got)
+	}
+}

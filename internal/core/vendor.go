@@ -113,6 +113,11 @@ type CheckinResult struct {
 	// Credit / Energy 是本次所得。
 	Credit int64
 	Energy int64
+	// Streak 是上游给出的连续签到天数；0 表示上游没提供（不做推算）。
+	//
+	// 必须由供应商透传而不是宿主自行累加：断签、补签、跨月重置的规则都在
+	// 上游，宿主只有「最近一次签到日期」，累加出来的天数与上游必然分叉。
+	Streak int64
 	// Message 是可读说明。
 	Message string
 	// NotRecorded 报告本次结果**不应**被记入签到历史。
