@@ -301,13 +301,47 @@ func TestSummarizeUGCounts(t *testing.T) {
 		{Key: "d", Label: "作品分享奖励", Status: UGFailed, Message: "HTTP 500"},
 	}
 	text := SummarizeUG(results)
-	for _, want := range []string{"领到 1 项", "此前已领 1 项", "暂不可领 1 项", "失败 1 项", "竞赛奖励：已领取"} {
+	// 「活动已结束」属于有信息量的一档，逐条展示而不是压成计数。
+	for _, want := range []string{"领到 1 项", "此前已领 1 项", "失败 1 项", "竞赛奖励：已领取", "作品抽奖：暂不可领（活动已结束）"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("汇总文案缺少 %q：%s", want, text)
 		}
 	}
+	if strings.Contains(text, "暂不可领 ") {
+		t.Errorf("没有可压缩项时不该出现计数：%s", text)
+	}
 	if got := SummarizeUG(nil); got != "没有可领取的活动入口" {
 		t.Errorf("空结果文案 = %q", got)
+	}
+}
+
+// TestSummarizeUGCompactedCountMatchesNames 锁住「计数只数被压缩的那些」。
+// 之前计数把逐条展示的也算进去，于是文案会出现「暂不可领 3 项（邀请码 X）」
+// 甚至「暂不可领 1 项（）」这种括号里空着的错位。
+func TestSummarizeUGCompactedCountMatchesNames(t *testing.T) {
+	text := SummarizeUG([]UGResult{
+		{Key: "a", Label: "作品抽奖", Status: UGUnavailable, Message: "当前不可领"},
+		{Key: "b", Label: "作品分享奖励", Status: UGUnavailable, Message: "当前不可领"},
+		{Key: "c", Label: "邀请奖励", Status: UGUnavailable, Message: "邀请码 6DXPMKYC5V23，已邀请 3 人，其中 2 人待发放"},
+	})
+	if !strings.Contains(text, "暂不可领 2 项（作品抽奖、作品分享奖励）") {
+		t.Fatalf("压缩计数与名字列表必须一致：%s", text)
+	}
+	if !strings.Contains(text, "邀请码 6DXPMKYC5V23") {
+		t.Fatalf("邀请码必须逐条展示：%s", text)
+	}
+	if strings.Contains(text, "（）") || strings.Contains(text, "()") {
+		t.Fatalf("不允许出现空括号：%s", text)
+	}
+}
+
+// TestSummarizeUGAlreadyKeepsProgress 锁住「已领取也要带出邀请进度」。
+func TestSummarizeUGAlreadyKeepsProgress(t *testing.T) {
+	text := SummarizeUG([]UGResult{
+		{Key: "invite", Label: "邀请奖励", Status: UGAlready, Message: "已邀请 5 人，其中 3 人待发放"},
+	})
+	if !strings.Contains(text, "已邀请 5 人") {
+		t.Fatalf("已领取分支不能丢掉邀请进度：%s", text)
 	}
 }
 
@@ -1082,5 +1116,64 @@ func TestClaimUGFissionStatusErrorVisible(t *testing.T) {
 	}
 	if !strings.Contains(result.Message, "500") {
 		t.Fatalf("失败原因应带上上游状态码，得到 %q", result.Message)
+	}
+}
+
+// TestClaimUGKeepsClaimedOn401 锁住「凭证失效时已经领到的不许丢」。
+// 401 之前的结果是用户唯一能看到的账，直接 return results（不含 claimed）
+// 会表现为「积分到账了，但报告里一条都没有」。
+func TestClaimUGKeepsClaimedOn401(t *testing.T) {
+	stubHost(t)
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case EpUGActivityInfo:
+			_, _ = w.Write([]byte(ugClaimableTableFixture))
+		case EpUGActivityAction:
+			if atomic.AddInt32(&calls, 1) == 1 {
+				_, _ = w.Write([]byte(`{"code":0,"message":"发放成功"}`))
+				return
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"code":401,"message":"unauthorized"}`))
+		case EpCodeFissionShareStatus:
+			_, _ = w.Write([]byte(`{"code":9090,"message":"活动暂不可用"}`))
+		default:
+			_, _ = w.Write([]byte(`{"code":0,"message":"ok"}`))
+		}
+	}))
+	defer server.Close()
+
+	results, err := ClaimUG(context.Background(), ugTestCredential(), ugTestConfig(t, server.URL))
+	if err == nil {
+		t.Fatal("活动触发 401 应返回错误")
+	}
+	claimed := 0
+	for _, result := range results {
+		if result.Status == UGClaimed && strings.HasPrefix(result.Key, "activity:") {
+			claimed++
+		}
+	}
+	if claimed != 1 {
+		t.Fatalf("401 之前领到的必须带回，实际 claimed=%d：%+v", claimed, results)
+	}
+}
+
+// TestUGRoundBudgetScalesWithFissionCandidates 锁住预算随裂变候选数伸缩。
+// 写死 45s 的话，fissionActivityCandidates 加一期就会从后面几期嘴里抢时间。
+func TestUGRoundBudgetScalesWithFissionCandidates(t *testing.T) {
+	if len(fissionActivityCandidates) == 0 {
+		t.Fatal("裂变候选不能为空，否则 reserve 恒为 0")
+	}
+	want := time.Duration(len(fissionActivityCandidates)) * 3 * ugDynamicTimeout
+	if ugFissionReserve != want {
+		t.Fatalf("ugFissionReserve = %s，want %s（候选数 × 3 次 × ugDynamicTimeout）", ugFissionReserve, want)
+	}
+	worst := 2*perRequestTimeout + 3*ugDynamicTimeout + ugFissionReserve
+	if ugRoundTimeout < worst {
+		t.Fatalf("ugRoundTimeout = %s 小于最坏耗时 %s", ugRoundTimeout, worst)
+	}
+	if ugRoundTimeout > 3*time.Minute {
+		t.Fatalf("ugRoundTimeout = %s 超过宿主 requestTimeout(3min)，会被外层截断", ugRoundTimeout)
 	}
 }

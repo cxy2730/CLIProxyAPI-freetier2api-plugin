@@ -187,13 +187,19 @@ const ugDynamicTimeout = 15 * time.Second
 // 又不会把整轮拖过宿主上限（总耗时恒不超过 ugRoundTimeout）。
 const ugClaimReserve = ugDynamicTimeout + 2*time.Second
 
-// ugFissionReserve 是留给分享裂变这一整块的预算。
+// ugFissionPerCandidateReserve 是单个裂变候选的预算。
 //
 // 裂变不是单个请求：share_status 判这期在不在、share_link 取邀请码、
-// grant 领取，三次各 ugDynamicTimeout。活动触发只看 ugClaimReserve 就会把
-// 时间吃到只剩十几秒，裂变三次请求全被 ctx 截断——表现为「活动领到了，
-// 裂变永远报错」。所以触发的门限必须是 ugFissionReserve + ugClaimReserve。
-const ugFissionReserve = 3 * ugDynamicTimeout
+// grant 领取，三次各 ugDynamicTimeout。
+const ugFissionPerCandidateReserve = 3 * ugDynamicTimeout
+
+// ugFissionReserve 是留给分享裂变这一整块的预算。
+//
+// 按候选数算而不是写死 45s：fissionActivityCandidates 加一期，预算跟着涨，
+// 否则新增候选会从后面几期嘴里抢时间，表现为「前一期领到、后一期永远报错」。
+// 活动触发只看 ugClaimReserve 就会把时间吃到只剩十几秒，裂变请求全被 ctx
+// 截断——所以触发的门限必须是 ugFissionReserve + ugClaimReserve。
+var ugFissionReserve = time.Duration(len(fissionActivityCandidates)) * ugFissionPerCandidateReserve
 
 // ugHasBudget 判断 ctx 剩余时间是否还够再打一次动态端点。
 func ugHasBudget(ctx context.Context, need time.Duration) bool {
@@ -542,6 +548,11 @@ func (r UGResult) Describe() string {
 		}
 		return fmt.Sprintf("%s：已领取", r.Label)
 	case UGAlready:
+		// 已领取同样可能带着用户要看的信息（裂变是「已邀请 N 人，其中 M 人
+		// 待发放」），压掉就等于把邀请进度藏起来。
+		if detail := strings.TrimSpace(r.Message); detail != "" {
+			return fmt.Sprintf("%s：此前已领取（%s）", r.Label, ugDetailText(detail))
+		}
 		return fmt.Sprintf("%s：此前已领取", r.Label)
 	case UGUnavailable:
 		if detail := strings.TrimSpace(r.Message); detail != "" {
@@ -624,17 +635,19 @@ func ClaimUG(ctx context.Context, cred *Credential, cfg Config) ([]UGResult, err
 	// （activity/action），不是固定端点。读表才知道当前有哪些活动、哪些能领，
 	// 写死端点会漏掉上游新开的活动，也会在活动下线后白打请求。
 	overview, claimed, errActivity := claimUGActivities(ctx, cfg, headers)
+	// 401 终止时也要把已经领到的结果带回去：整轮返回的结果是用户唯一能看到
+	// 的账，丢在这里就等于「积分领到了，但报告里没有」。
+	results = append(results, claimed...)
 	if errActivity != nil {
 		return results, errActivity
 	}
-	results = append(results, claimed...)
 	results = append(results, overview...)
 	// 分享裂变：当前这一期不在活动表里（表里那条已结束），单独探测。
 	fissionResults, errFission := claimFissionRewards(ctx, cfg, headers)
+	results = append(results, fissionResults...)
 	if errFission != nil {
 		return results, errFission
 	}
-	results = append(results, fissionResults...)
 	return results, nil
 }
 
@@ -643,15 +656,19 @@ func ClaimUG(ctx context.Context, cred *Credential, cfg Config) ([]UGResult, err
 // 最坏耗时 = 2×perRequestTimeout（2 个固定端点，60s）
 //   - 1×ugDynamicTimeout（activity/info，15s）
 //   - N×ugDynamicTimeout（activity/action 触发）
-//   - ugFissionReserve（share_status + share_link + grant，45s）
+//   - ugFissionReserve（每期 share_status + share_link + grant，随候选数伸缩）
+//   - ugRoundSlack（余量）
 //
 // N 不写死，由触发门限 ugHasBudget(ugFissionReserve+ugClaimReserve) 推出：
 // 165s 起手，扣掉 60+15 后剩 90s，每次触发前要求剩余 ≥62s，
 // 于是 N ≤ 2（90 → 75 → 60 停），最坏 60+15+30+45 = 150s < 165s。
+// 裂变候选增加时 ugFissionReserve 变大，这里自动跟着涨，不必手改数字。
 // 宿主上限：手动触发走 internal/admin/admin.go:26 的 requestTimeout = 3min；
 // 后台「一键完成」走 internal/tasks/autoall.go 的 autoAllTimeout = 30min。
 // 加端点时同步上调（ug_test.go 用同一组常量验算，改超时不会漏改预算）。
-const ugRoundTimeout = 165 * time.Second
+const ugRoundSlack = ugDynamicTimeout
+
+var ugRoundTimeout = 2*perRequestTimeout + 3*ugDynamicTimeout + ugFissionReserve + ugRoundSlack
 
 // claimUGOne 打一个端点并归类结果。
 //
@@ -857,7 +874,7 @@ func SummarizeUG(results []UGResult) string {
 	}
 	parts := make([]string, 0, len(results))
 	names := make([]string, 0, len(results))
-	var claimed, already, unavailable, pending, failed int
+	var claimed, already, pending, failed, compacted int
 	for _, result := range results {
 		switch result.Status {
 		case UGClaimed:
@@ -867,7 +884,6 @@ func SummarizeUG(results []UGResult) string {
 			already++
 			parts = append(parts, result.Describe())
 		case UGUnavailable:
-			unavailable++
 			// 有信息量的一档必须逐条展示：邀请码、「已邀请 N 人其中 M 人待
 			// 发放」、「活动未开始」都是 UGUnavailable + Message 表达的，
 			// 压成名字列表就等于把用户唯一能行动的信息丢掉。只有「当前不可
@@ -875,6 +891,9 @@ func SummarizeUG(results []UGResult) string {
 			if ugUnavailableWorthShowing(result.Message) {
 				parts = append(parts, result.Describe())
 			} else {
+				// 计数只数被压缩的那些，否则「暂不可领 3 项（邀请码 X）」
+				// 会出现括号里只有 1 个名字、甚至一个都没有的错位。
+				compacted++
 				names = append(names, result.Label)
 			}
 		case UGNeedsPrereq:
@@ -886,8 +905,8 @@ func SummarizeUG(results []UGResult) string {
 			parts = append(parts, result.Describe())
 		}
 	}
-	if unavailable > 0 {
-		parts = append(parts, fmt.Sprintf("暂不可领 %d 项（%s）", unavailable, strings.Join(names, "、")))
+	if compacted > 0 {
+		parts = append(parts, fmt.Sprintf("暂不可领 %d 项（%s）", compacted, strings.Join(names, "、")))
 	}
 	head := fmt.Sprintf("活动福利：领到 %d 项，此前已领 %d 项，待满足前置 %d 项，失败 %d 项",
 		claimed, already, pending, failed)
