@@ -335,7 +335,7 @@ func BuildQuotaResponse(quota *Quota) pluginapi.QuotaFetchResponse {
 		if group := quotaGroup(family.group, family.bucket); group != nil {
 			response.Groups = append(response.Groups, *group)
 		}
-		// total 必须一并输出：页面的「剩余/总额 + 使用率」要它才能算比例。
+		// total 必须一并输出：页面的「剩余/总额 + 剩余率」要它才能算比例。
 		// 上游对 Free 计划可能给 total=0（额度按剩余量计），此时仍输出 0——
 		// 页面会显示 "—"，比编一个数诚实。
 		// Unit 一律留空：宿主面板把 unit 直接拼在数字后面，填 "credits" 会渲染成

@@ -18,7 +18,7 @@ func TestConsolePageGuardsZeroTotalDivisor(t *testing.T) {
 
 	// 分母守卫必须只算一次，进度条与百分比共用同一判据。
 	if !strings.Contains(page, "var ratioKnown = hasTotal && quota.total > 0;") {
-		t.Fatal("使用率必须同时校验 has_total 与 total > 0，否则 0/0 会渲染成 NaN%")
+		t.Fatal("剩余率必须同时校验 has_total 与 total > 0，否则 0/0 会渲染成 NaN%")
 	}
 	if !strings.Contains(page, "var ratio = ratioKnown ? (quota.remain / quota.total) : 0;") {
 		t.Fatal("ratio 必须由 ratioKnown 派生，不能各自重复判断")

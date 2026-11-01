@@ -233,8 +233,19 @@ input.aliasinput:focus { outline: none; border-color: var(--accent); box-shadow:
 .banner { padding: 10px 14px; border-radius: 10px; margin-bottom: 12px; font-size: 13px;
           display: none; transition: opacity .2s ease; border: 1px solid transparent;
           border-left-width: 3px; backdrop-filter: blur(6px); white-space: pre-line;
-          max-height: min(38vh, 180px); overflow-y: auto; overscroll-behavior: contain; }
+          max-height: min(38vh, 180px); overflow-y: auto; overscroll-behavior: contain;
+          position: relative; }
 .banner.show { display: block; }
+/* 常驻横幅（duration=0）不会自动消失，必须给一个显式关闭入口，
+   否则只能等下一次操作把它替换掉。 */
+.banner.persist { padding-right: 38px; }
+.banner-close { position: absolute; top: 6px; right: 8px; width: 24px; height: 24px;
+                display: none; align-items: center; justify-content: center; padding: 0;
+                border: 0; border-radius: 6px; background: transparent; color: inherit;
+                font-size: 16px; line-height: 1; cursor: pointer; opacity: .6; }
+.banner.persist .banner-close { display: flex; }
+.banner-close:hover { opacity: 1; background: rgba(127, 127, 127, .16); }
+.banner-close:focus-visible { outline: 2px solid currentColor; outline-offset: 1px; opacity: 1; }
 .banner.err  { background: var(--err-soft);  border-left: 3px solid var(--err);  color: var(--err); }
 .banner.ok   { background: var(--ok-soft);   border-left: 3px solid var(--ok);   color: var(--ok); }
 .banner.warn { background: var(--warn-soft); border-left: 3px solid var(--warn); color: var(--warn); }
@@ -682,14 +693,45 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
 
   var bannerTimer = null;
 
+  // reasonText 汇总某一状态下的上游原因（去重，最多列两条）。
+  // 明细里的「跳过 3」「失败 2」只是计数，原因由各 vendor 写进 message；
+  // 前端如实展示，不再自行猜测。
+  function reasonText(results, status) {
+    var seen = {};
+    var reasons = [];
+    for (var i = 0; i < results.length; i++) {
+      var item = results[i];
+      if (!item || item.status !== status) continue;
+      var msg = String(item.message || "").trim();
+      if (!msg || seen[msg]) continue;
+      seen[msg] = 1;
+      reasons.push(msg);
+    }
+    if (!reasons.length) return "";
+    var shown = reasons.slice(0, 2).join("；");
+    if (reasons.length > 2) shown += "；等 " + reasons.length + " 条原因";
+    return "（" + shown + "）";
+  }
+
   function banner(kind, text, duration) {
     if (bannerTimer) { clearTimeout(bannerTimer); bannerTimer = null; }
     var el = document.getElementById("banner");
     if (!el) return;
-    el.className = "banner show " + kind;
-    el.textContent = text;
     // 默认自动消失时间：ok 5秒，warn 6秒，err 8秒。若传入 0 则持续显示直到被下一次操作替换或手动清除
     var timeout = duration !== undefined ? duration : (kind === "ok" ? 5000 : (kind === "warn" ? 6000 : 8000));
+    el.className = "banner show " + kind + (timeout > 0 ? "" : " persist");
+    el.textContent = text;
+    if (timeout <= 0) {
+      // 常驻横幅没有超时兜底，必须能被手动关掉。
+      var close = document.createElement("button");
+      close.type = "button";
+      close.className = "banner-close";
+      close.setAttribute("aria-label", "关闭提示");
+      close.title = "关闭提示";
+      close.textContent = "×";
+      close.addEventListener("click", clearBanner);
+      el.appendChild(close);
+    }
     if (timeout > 0) {
       bannerTimer = setTimeout(function () {
         clearBanner();
@@ -3159,27 +3201,27 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
           doneTotal += done; errTotal += errs; skipTotal += skips;
           if (errs) { failAccounts++; } else if (done) { okAccounts++; } else { skipAccounts++; }
           var parts = ["完成 " + done];
-          if (skips) { parts.push("跳过 " + skips); }
-          if (errs) { parts.push("失败 " + errs); }
-          // 「完成 0」单独出现时读者无法判断是渠道不支持还是卡住了，补一句归因。
-          var note = "";
-          if (!done && !errs && skips) {
-            note = "（任务已全部领过或窗口未开）";
-          } else if (!done && !errs && !skips) {
-            note = "（该账号没有返回任何任务）";
-          }
+          // 跳过与失败必须带上游给的原因，否则「完成 0 / 跳过 3」读者无从判断
+          // 是「已经领过」「窗口没开」还是「该渠道不支持」。
+          if (skips) { parts.push("跳过 " + skips + reasonText(results, "skipped")); }
+          if (errs) { parts.push("失败 " + errs + reasonText(results, "error")); }
+          // 只有「一条结果都没有」才是没返回任务；有条目时上面已经给了真实原因。
+          var note = (!done && !errs && !skips) ? "（该账号没有返回任何任务）" : "";
           lines.push(label + "：" + parts.join("，") + note);
         });
         var summary = "完成 " + doneTotal + " 个任务";
         if (skipTotal) { summary += "，跳过 " + skipTotal; }
         if (errTotal) { summary += "，失败 " + errTotal; }
-        var head = okAccounts + " 个账号有执行结果";
-        if (skipAccounts) { head += "，" + skipAccounts + " 个账号未执行"; }
-        if (failAccounts) { head += "，" + failAccounts + " 个账号有失败"; }
-        // 有失败给红、全跳过给黄，只有真跑出结果才给绿。
-        var kind = errTotal ? "err" : (doneTotal ? "ok" : "warn");
-        var text = head + " —— " + summary + "\n" + (lines.join("\n") || result.message || "无结果");
-        // 明细超过三行时常驻，避免 5 秒后消失、无从回看。
+        // 三个计数各自对应一句，避免「有执行结果」这种与 summary 对不上的口径。
+        var summaryHead = okAccounts + " 个账号全部成功";
+        if (skipAccounts) { summaryHead += "，" + skipAccounts + " 个账号未执行"; }
+        if (failAccounts) { summaryHead += "，" + failAccounts + " 个账号有失败"; }
+        // 有失败给红；中断（cancelled）既不是成功也不是失败，给黄；只有真跑出结果才给绿。
+        var kind = errTotal ? "err" : (result.cancelled ? "warn" : (doneTotal ? "ok" : "warn"));
+        // 后端在关停或超时时会写 cancelled=true + message，这条比逐账号明细更重要，置顶。
+        var cancelledNote = (result.cancelled && result.message) ? result.message + "\n" : "";
+        var text = cancelledNote + summaryHead + " —— " + summary + "\n" + (lines.join("\n") || result.message || "无结果");
+        // 明细超过三行时常驻，避免 5 秒后消失、无从回看；常驻横幅自带关闭按钮。
         banner(kind, text, lines.length > 3 ? 0 : 8000);
         loadStatus(true);
       }).catch(function (err) {

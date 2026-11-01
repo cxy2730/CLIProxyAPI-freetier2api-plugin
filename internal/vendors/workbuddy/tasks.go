@@ -1522,12 +1522,16 @@ func waitGrowthClaimable(ctx context.Context, client *Client, credential *Creden
 		// 每个任务白白多花 3~9 秒。
 		task, errTask := findGrowthTask(ctx, client, credential, code)
 		if errTask == nil {
-			if task == nil || task.Claimed {
+			// 已领过是终态，不必再等。
+			if task != nil && task.Claimed {
 				return false
 			}
-			if task.Claimable() || task.Done() {
+			if task != nil && (task.Claimable() || task.Done()) {
 				return true
 			}
+			// task == nil 不能当终态：动作刚做完时上游列表还没把该任务吐出来
+			// （列表最终一致），此刻放弃等于白做任务、拿不到奖励。宁可多等
+			// 一轮——只有 attempts 用尽才判失败。
 		}
 		if attempt == attempts {
 			break

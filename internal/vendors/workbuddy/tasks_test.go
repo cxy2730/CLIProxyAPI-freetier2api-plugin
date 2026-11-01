@@ -642,3 +642,76 @@ func TestGlobalDailyBonusUsesUpstreamStreak(t *testing.T) {
 		})
 	}
 }
+
+// TestWaitGrowthClaimableChecksBeforeWaiting 锁定「先查后等」：
+// 任务在第一次查询里就达标时不许先睡 3 秒，也不该发起第二次列表请求。
+func TestWaitGrowthClaimableChecksBeforeWaiting(t *testing.T) {
+	listCalls := 0
+	installHostHTTP(t, func(_, rawURL string) (int, string) {
+		if strings.Contains(rawURL, "/claim") {
+			return http.StatusOK, `{"code":0,"data":{"credit":1,"energy":1}}`
+		}
+		listCalls++
+		return http.StatusOK, `{"code":0,"data":[{"task_code":"chat_5","progress":{"current":5,"target":5}}]}`
+	})
+	client := NewClient(newRuntime(core.Env{}), Options{Context: context.Background()})
+	cred := testGlobalCredential("uid-wait-hit")
+	cred.SetRealm(RegionCN)
+
+	start := time.Now()
+	if !waitGrowthClaimable(context.Background(), client, cred, "chat_5") {
+		t.Fatal("任务已达标时 waitGrowthClaimable 必须返回 true")
+	}
+	if listCalls != 1 {
+		t.Fatalf("list calls = %d, want 1（先查后等，不该多轮）", listCalls)
+	}
+	if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
+		t.Fatalf("耗时 %v：达标任务不该先睡 3 秒", elapsed)
+	}
+}
+
+// TestWaitGrowthClaimableKeepsPollingWhenTaskNotVisible 锁定复审 P2-2：
+// 动作刚做完、任务还没出现在列表里时不能立刻判失败，否则白做任务拿不到奖励。
+func TestWaitGrowthClaimableKeepsPollingWhenTaskNotVisible(t *testing.T) {
+	listCalls := 0
+	installHostHTTP(t, func(_, rawURL string) (int, string) {
+		if strings.Contains(rawURL, "/claim") {
+			return http.StatusOK, `{"code":0,"data":{"credit":1,"energy":1}}`
+		}
+		listCalls++
+		if listCalls == 1 {
+			// 第一次：列表里还没有这个任务（上游列表最终一致）。
+			return http.StatusOK, `{"code":0,"data":[]}`
+		}
+		return http.StatusOK, `{"code":0,"data":[{"task_code":"chat_5","progress":{"current":5,"target":5}}]}`
+	})
+	client := NewClient(newRuntime(core.Env{}), Options{Context: context.Background()})
+	cred := testGlobalCredential("uid-wait-miss")
+	cred.SetRealm(RegionCN)
+
+	if !waitGrowthClaimable(context.Background(), client, cred, "chat_5") {
+		t.Fatal("任务只是暂时不在列表里，必须继续轮询而不是立即判失败")
+	}
+	if listCalls < 2 {
+		t.Fatalf("list calls = %d, want >= 2（task==nil 时必须继续等）", listCalls)
+	}
+}
+
+// TestWaitGrowthClaimableStopsOnClaimed 锁定终态：已领奖的任务不再等待。
+func TestWaitGrowthClaimableStopsOnClaimed(t *testing.T) {
+	listCalls := 0
+	installHostHTTP(t, func(_, rawURL string) (int, string) {
+		listCalls++
+		return http.StatusOK, `{"code":0,"data":[{"task_code":"chat_5","progress":{"current":5,"target":5},"claimed":true}]}`
+	})
+	client := NewClient(newRuntime(core.Env{}), Options{Context: context.Background()})
+	cred := testGlobalCredential("uid-wait-claimed")
+	cred.SetRealm(RegionCN)
+
+	if waitGrowthClaimable(context.Background(), client, cred, "chat_5") {
+		t.Fatal("已领奖的任务不该再报可领")
+	}
+	if listCalls != 1 {
+		t.Fatalf("list calls = %d, want 1（终态应立即返回）", listCalls)
+	}
+}

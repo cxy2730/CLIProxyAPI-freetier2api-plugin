@@ -880,20 +880,19 @@ func TestConsoleAccountAndModelStatusLabels(t *testing.T) {
 //
 // 旧实现无论结果如何都弹绿色横幅、5 秒后消失，8 个账号里 6 个根本没执行
 // 也报「全部账号执行完毕」；「完成 0」既可能是渠道不支持也可能是卡住，
-// 读者无从分辨。这里要求：按 done/skip/error 分级着色、失败有归因、
-// 明细多时常驻、横幅限高可滚动。
+// 读者无从分辨。这里要求：按 done/skip/error 分级着色（中断不落绿）、
+// 失败与跳过带上游原因、明细多时常驻、横幅限高可滚动。
 func TestConsoleAutoAllReportsOutcomeHonestly(t *testing.T) {
 	page := Page("/plugins/freetier2api")
 
 	for _, want := range []string{
-		// 分级着色：有失败给红、全跳过给黄、只有真跑出结果才给绿。
-		`var kind = errTotal ? "err" : (doneTotal ? "ok" : "warn");`,
+		// 分级着色：有失败给红、中断给黄、只有真跑出结果才给绿。
+		`var kind = errTotal ? "err" : (result.cancelled ? "warn" : (doneTotal ? "ok" : "warn"));`,
 		// 跳过与失败分开统计，不再把 skipped 混进「完成」。
 		`if (entry.skipped) {`,
 		`skipAccounts++;`,
-		// 「完成 0」的两种归因。
-		`note = "（任务已全部领过或窗口未开）";`,
-		`note = "（该账号没有返回任何任务）";`,
+		// 「完成 0」只保留一条归因：一条结果都没返回；其余原因来自上游 message。
+		`note = (!done && !errs && !skips) ? "（该账号没有返回任何任务）" : "";`,
 		// 明细超过三行时常驻，不再 5 秒消失。
 		`banner(kind, text, lines.length > 3 ? 0 : 8000);`,
 		// 横幅限高，390px 视口下不挤掉账号表格。
