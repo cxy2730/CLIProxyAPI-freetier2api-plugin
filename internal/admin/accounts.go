@@ -328,7 +328,7 @@ func (s *Service) handleAccountEnabledRequest(req pluginapi.ManagementRequest) p
 		if body.Enabled {
 			result.Message = "已启用"
 		} else {
-			result.Message = "已禁用"
+			result.Message = "已停用"
 		}
 		changed++
 		results = append(results, result)

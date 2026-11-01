@@ -862,10 +862,16 @@ var (
 
 // ugAlreadyRestates 判断一条「已领取」结果的说明是不是只在重复状态本身。
 // 命中就不在「此前已领取」后面再拼一遍，空文案同理。
+//
+// 仅当整条文案是简短的状态复述（如「该奖励已领取」、「已发放」）时才抑制；
+// 若文案包含具体数字或明细（如「已邀请 5 人，已发放 3 人」），必须保留给用户看。
 func ugAlreadyRestates(message string) bool {
 	detail := strings.ToLower(strings.TrimSpace(message))
 	if detail == "" {
 		return true
+	}
+	if strings.ContainsAny(detail, "0123456789") {
+		return false
 	}
 	return core.ContainsAny(detail, ugAlreadyMarkers) || core.ContainsAny(detail, ugAlreadyRestateMarkers)
 }

@@ -845,3 +845,33 @@ func TestConsoleScanTableScrollsInsideWrapper(t *testing.T) {
 		t.Fatal("accounts table already scrolls on its own; do not wrap it again")
 	}
 }
+
+// TestConsoleAccountAndModelStatusLabels 锁定控制台账号与模型列表的状态与操作文案及排序：
+// 正常 -> 启用，禁用/已禁用 -> 停用，批量按钮为「停用选中」，移除旧提示，且账号列表按「启用在上停用在下」排序。
+func TestConsoleAccountAndModelStatusLabels(t *testing.T) {
+	page := Page("/plugins/freetier2api")
+
+	for _, want := range []string{
+		`<button class="act" id="btnDisableAccounts">停用选中</button>`,
+		`<button class="act" id="btnDisableModels">停用选中</button>`,
+		`account.disabled ? pill("停用", "err") : pill("启用", "ok")`,
+		`model.disabled ? pill("停用", "err") : pill("启用", "ok")`,
+		`// 排序：状态 + 供应商名称 + 账号 ID（启用在上，停用在下；同状态内按 供应商名称 + 账号 ID 升序）`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("console page missing expected label: %s", want)
+		}
+	}
+
+	for _, forbidden := range []string{
+		`<button class="act" id="btnDisableAccounts">禁用选中</button>`,
+		`<button class="act" id="btnDisableModels">禁用选中</button>`,
+		`pill("已禁用", "err")`,
+		`pill("禁用", "err")`,
+		`勾选账号后可批量禁用`,
+	} {
+		if strings.Contains(page, forbidden) {
+			t.Fatalf("console page contains forbidden deprecated label: %s", forbidden)
+		}
+	}
+}

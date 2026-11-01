@@ -345,7 +345,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
           <button class="act primary" id="btnAddAccount">添加账号 ▾</button>
           <div class="dropdown-menu" id="addVendorMenu" hidden></div>
         </div>
-        <button class="act" id="btnDisableAccounts">禁用选中</button>
+        <button class="act" id="btnDisableAccounts">停用选中</button>
         <button class="act" id="btnEnableAccounts">启用选中</button>
         <button class="act" id="btnSelectAllAccounts">全选</button>
         <button class="act" id="btnSelectNoneAccounts">清空</button>
@@ -355,9 +355,6 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
         <button class="act primary" id="btnAutoAll">一键做任务</button>
         <button class="act danger" id="btnDeleteAccounts" disabled>删除</button>
         <label>筛选 <input type="text" id="accountFilter" placeholder="如 workbuddy / 邮箱" style="width:160px"></label>
-      </div>
-      <div class="hint">
-        勾选账号后可批量禁用 / 启用 / 删除；未勾选时 Token 续期、查询额度、一键签到、一键做任务作用于全部账号。
       </div>
 
       <div class="card" id="smsBox" hidden>
@@ -438,7 +435,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       <h2>模型 <span class="muted" id="modelCount"></span></h2>
       <div class="row">
         <button class="act primary" id="btnLoadModels">读取模型清单</button>
-        <button class="act" id="btnDisableModels">禁用选中</button>
+        <button class="act" id="btnDisableModels">停用选中</button>
         <button class="act" id="btnEnableModels">启用选中</button>
         <button class="act" id="btnSelectAllModels">全选</button>
         <button class="act" id="btnSelectNoneModels">清空</button>
@@ -1190,8 +1187,13 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       host.appendChild(el("div", "没有匹配「" + filter + "」的账号。", "muted"));
       return;
     }
-    // 排序：供应商名称 + 账号 ID（同一供应商聚合展示，供应商内按账号 ID 升序）
+    // 排序：状态 + 供应商名称 + 账号 ID（启用在上，停用在下；同状态内按 供应商名称 + 账号 ID 升序）
     visible.sort(function (a, b) {
+      var statusA = a.disabled ? 1 : 0;
+      var statusB = b.disabled ? 1 : 0;
+      if (statusA !== statusB) {
+        return statusA - statusB;
+      }
       var vendorA = vendorLabel(a.vendor_id, a.realm);
       var vendorB = vendorLabel(b.vendor_id, b.realm);
       if (vendorA !== vendorB) {
@@ -1216,7 +1218,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
       // historyRow 是该账号的展开行（无历史或未展开时为 null / hidden）。
       var historyRow = null;
       row.appendChild(accountCheckCell(account));
-      row.appendChild(cellWith(account.disabled ? pill("已禁用", "err") : pill("正常", "ok")));
+      row.appendChild(cellWith(account.disabled ? pill("停用", "err") : pill("启用", "ok")));
 
       var vendor = vendorLabel(account.vendor_id, account.realm);
       var vendorCell = el("td");
@@ -1488,7 +1490,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   function toggleSelectedAccounts(disabled) {
     var ids = selectedAccountIDs();
     if (!ids.length) { banner("err", "请先勾选账号"); return; }
-    var verb = disabled ? "禁用" : "启用";
+    var verb = disabled ? "停用" : "启用";
     api("POST", "/accounts/enabled", { account_ids: ids, enabled: !disabled }).then(function (data) {
       if (!data) return;
       var failed = (data.results || []).filter(function (r) { return !r.ok; });
@@ -1967,7 +1969,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   }
 
   function modelStatusCell(model) {
-    return cellWith(model.disabled ? pill("禁用", "err") : pill("正常", "ok"));
+    return cellWith(model.disabled ? pill("停用", "err") : pill("启用", "ok"));
   }
 
   function modelVendorCell(model) {
@@ -2048,7 +2050,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   function toggleModels(disabled) {
     var ids = selectedModelIDs();
     if (!ids.length) { banner("err", "请先勾选模型"); return; }
-    var verb = disabled ? "禁用" : "启用";
+    var verb = disabled ? "停用" : "启用";
     api("POST", "/models/toggle", { models: ids, disabled: disabled }).then(function (data) {
       if (!data) return;
       banner("ok", "已" + verb + " " + (data.changed || ids.length) + " 个模型，正在同步到宿主…");
