@@ -83,6 +83,11 @@ func claimNote(claim *pluginapi.ClaimStatus, result quotaResult) string {
 	if claim == nil || claim.Error != "" {
 		return ""
 	}
+	// 额度本身没查到就别编说明：额度列已经写着失败原因，这里再说一句「上游
+	// 暂未返回明细」，会让人以为是活动还没生效，而不是这次取数根本没成功。
+	if !result.OK {
+		return ""
+	}
 	if len(result.Metrics) > 0 || (result.HasTotal && result.Total > 0) {
 		return ""
 	}
