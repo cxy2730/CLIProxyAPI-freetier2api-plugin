@@ -115,12 +115,20 @@ func catalogEntries(items []catalogItem) (map[string]ResolvedModel, map[string]M
 		if display == "" {
 			display = name
 		}
+		contextWindow := item.ContextWindow.Dev
+		if strings.HasSuffix(strings.ToLower(wire), "__max") {
+			if item.ContextWindow.Max > 0 {
+				contextWindow = item.ContextWindow.Max
+			} else {
+				contextWindow = 1000000
+			}
+		}
 		models[strings.ToLower(name)] = ResolvedModel{ConfigName: name, WireName: wire}
 		metadata[name] = Model{
 			ID:            name,
 			Name:          display,
 			Description:   "Trae 上游模型",
-			ContextWindow: item.ContextWindow.Dev,
+			ContextWindow: contextWindow,
 			MaxTokens:     maxTokens,
 			SupportsTools: strings.Contains(item.ExtraConfig, `"native_function_call":true`),
 			IsReasoning:   item.DisplayConfig.ModelCapability == "reasoning_model",
@@ -180,6 +188,7 @@ type catalogItem struct {
 	CustomModels  any    `json:"custom_models"`
 	ContextWindow struct {
 		Dev int `json:"dev"`
+		Max int `json:"max"`
 	} `json:"context_window_tokens"`
 	DisplayConfig struct {
 		DisplayName     string `json:"display_name"`
@@ -225,10 +234,12 @@ type catalogDetail struct {
 	MaxTokens int    `json:"max_tokens"`
 }
 
-// selectWireModel 从 model_detail_list 里挑 wire id：优先 __dev 档位，
-// 没有 __dev 的配置取第一条。注意 wire id 属于某个 function 的命名空间，
+// selectWireModel 从 model_detail_list 里挑 wire id：优先 __max 档位（1M 上下文 / 64K 输出），
+// 没有 __max 时降级到 __dev 档位，再没有则取第一条可用配置。注意 wire id 属于某个 function 的命名空间，
 // 返回值只在该 function 下有效（见 fetchCatalog）。
 func selectWireModel(details []catalogDetail) (string, int) {
+	devWire := ""
+	devTokens := 0
 	fallback := ""
 	fallbackTokens := 0
 	for _, detail := range details {
@@ -236,13 +247,21 @@ func selectWireModel(details []catalogDetail) (string, int) {
 		if name == "" {
 			continue
 		}
-		if strings.HasSuffix(strings.ToLower(name), "__dev") {
+		lower := strings.ToLower(name)
+		if strings.HasSuffix(lower, "__max") {
 			return name, detail.MaxTokens
+		}
+		if strings.HasSuffix(lower, "__dev") && devWire == "" {
+			devWire = name
+			devTokens = detail.MaxTokens
 		}
 		if fallback == "" {
 			fallback = name
 			fallbackTokens = detail.MaxTokens
 		}
+	}
+	if devWire != "" {
+		return devWire, devTokens
 	}
 	return fallback, fallbackTokens
 }
