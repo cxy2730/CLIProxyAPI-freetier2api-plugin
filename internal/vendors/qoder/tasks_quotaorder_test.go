@@ -8,7 +8,7 @@ import (
 
 // TestOrderedQuotaFamiliesPutsUsableBucketFirst 锁定「页头数字由谁提供」。
 //
-// 宿主 auth.Totals 取第一个有容量的族，而「有容量」包含
+// 插件 auth.Totals 取第一个有容量的族，而「有容量」包含
 // 「total>0、remaining==0」（额度合法用完）——所以已过期的桶若排在前面，
 // 页头会永远显示 0，账号明明还有额度也看着像没额度。
 func TestOrderedQuotaFamiliesPutsUsableBucketFirst(t *testing.T) {

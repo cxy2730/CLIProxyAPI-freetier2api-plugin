@@ -110,10 +110,22 @@ func quotaBucketFromObject(object map[string]any) *QuotaBucket {
 		return nil
 	}
 	bucket := &QuotaBucket{Used: numbers.used, Total: numbers.total, Remaining: numbers.remaining}
-	if reset, okReset := object["resetTime"].(string); okReset {
-		bucket.ResetTime = reset
-	}
+	bucket.ResetTime = resetTimeOf(object)
 	return bucket
+}
+
+// resetTimeOf 读桶的重置时刻，兼容 resetTime 与 reset_time 两种拼写。
+//
+// 上游不同接口的字段拼写不一致。两处解析各写一套迟早会漂：漏掉别名的那条
+// 路径会把「有重置时间」显示成「不重置」（#71 第二轮复审 P2-7）。
+func resetTimeOf(object map[string]any) string {
+	if reset, okReset := object["resetTime"].(string); okReset {
+		return reset
+	}
+	if reset, okReset := object["reset_time"].(string); okReset {
+		return reset
+	}
+	return ""
 }
 
 // bucketNumbers 是桶内三个数值及其「是否存在」标记。
@@ -266,11 +278,7 @@ func extractQuotaBucket(data map[string]any, key string) *QuotaBucket {
 		Total:     numbers.total,
 		Remaining: numbers.remaining,
 	}
-	if reset, okReset := obj["resetTime"].(string); okReset {
-		bucket.ResetTime = reset
-	} else if reset, okReset := obj["reset_time"].(string); okReset {
-		bucket.ResetTime = reset
-	}
+	bucket.ResetTime = resetTimeOf(obj)
 	return bucket
 }
 
@@ -288,7 +296,7 @@ func BuildQuotaResponse(quota *Quota) pluginapi.QuotaFetchResponse {
 	// 显示「暂无额度数据」，看不出「已经用完」。
 	anyData := quotaBucketHasData(quota.UserQuota) || quotaBucketHasData(quota.AddonQuota) || quotaBucketHasData(quota.OrgPackage)
 	keepEmpty := func(bucket *QuotaBucket) bool { return !anyData || quotaBucketHasData(bucket) }
-	// 三桶按「谁还有余额」排序后输出：宿主的 auth.Totals 取**第一个有容量的
+	// 三桶按「谁还有余额」排序后输出：插件的 auth.Totals 取**第一个有容量的
 	// 族**当页头数字（total>0 即算有容量），所以顺序就是语义。
 	// 排错的表现：企业账号的页头永远停在已过期那桶的「0 / 3000」。
 	//
@@ -354,7 +362,7 @@ type quotaFamilyMetric struct {
 
 // orderedQuotaFamilies 按「谁还有余额」排定额度桶的输出顺序。
 //
-// 宿主 auth.Totals 取第一个有容量的族当页头数字，而「有容量」包含
+// 插件 auth.Totals 取第一个有容量的族当页头数字，而「有容量」包含
 // 「total>0、remaining==0」（额度合法用完）。Qoder 的桶会出现这种状态：
 //
 //	企业账号  套餐 3000/3000 用尽 → 个人拓展包过期(total=3000,remaining=0)

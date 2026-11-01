@@ -185,28 +185,14 @@ func (v *adapter) fetchQuota(ctx context.Context, cred *Credential) (*pluginapi.
 	if len(snapshot.metrics) == 0 {
 		// 上游在活动额度生效前不会生成 balances 桶，只回空额度；但授予量已经
 		// 写在 plans[].entitlements 里。用授予明细兜底展示「剩余 / 总额」，
-		// 并注明生效时刻，页面不必等到生效那一刻才有数字。
-		note := "尚未领取体验套餐（Start Plan），领取后才有额度"
-		if metrics, groups, effectiveAt := planGrantQuota(snapshot.plans, snapshot.serverTime); len(metrics) > 0 {
+		// 页面不必等到生效那一刻才有数字。
+		//
+		// 「为什么没有额度」这句说明不在这里拼：它属于展示层，由 admin 依据
+		// 领取状态与额度明细统一生成（state.ClaimRecord.Note），供应商不必为
+		// 页面文案负责，宿主契约里也不该出现插件专用的说明字段。
+		if metrics, groups, _ := planGrantQuota(snapshot.plans, snapshot.serverTime); len(metrics) > 0 {
 			response.Summary = append(response.Summary, metrics...)
 			response.Groups = append(response.Groups, groups...)
-			note = "套餐已领取，额度尚未生效"
-			if effectiveAt > 0 {
-				note = "套餐已领取，额度 " + time.Unix(effectiveAt, 0).UTC().Format(time.RFC3339) + " 生效"
-			}
-		} else if plansEnded(snapshot.plans, snapshot.serverTime) {
-			// 只有「每个套餐的 ends_at 都已过去」才能说过期：授予为 0 且授予
-			// 时刻在未来的 pending 套餐同样没有可展示的授予，说成过期是错的。
-			note = "套餐已过期，无可用额度"
-		} else if len(snapshot.plans) > 0 {
-			// 领了但还没有可展示的授予（桶未生成 / 授予为 0 且生效在未来）：
-			// 说成「尚未领取」同样误导。
-			note = "套餐已领取，额度桶尚未生效"
-		}
-		// 这些是说明而不是失败：Claim.Error 只表示「取数失败」，页面据它把
-		// 按钮置成可点重试；说明放 Note，页面只当提示渲染。
-		if response.Claim != nil && response.Claim.Note == "" {
-			response.Claim.Note = note
 		}
 	}
 	return response, nil
@@ -759,8 +745,8 @@ type grantCandidate struct {
 // 生效的。
 //
 // 只看 activePlans 不够：上游对「已领取、额度未生效」的套餐可能标成 pending，
-// 那样既取不到授予明细，状态文案还会说成「尚未领取体验套餐」，与事实相反。
-// 到期时间已过的条目仍然排除。生效时刻一并带出，避免调用方重复解析 entitlements。
+// 那样既取不到授予明细，额度又会显示成空。到期时间已过的条目仍然排除。
+// 生效时刻一并带出，避免调用方重复解析 entitlements。
 func grantCandidatePlans(plans []map[string]any, serverTime int64) []grantCandidate {
 	out := make([]grantCandidate, 0, len(plans))
 	for _, plan := range plans {
@@ -774,22 +760,6 @@ func grantCandidatePlans(plans []map[string]any, serverTime int64) []grantCandid
 		}
 	}
 	return out
-}
-
-// plansEnded 报告所有套餐都已按服务端时间到期。
-//
-// 没有 ends_at 或服务端时间未知时一律返回 false：宁可说「额度桶尚未生效」，
-// 也不要把「不知道」说成「过期」。
-func plansEnded(plans []map[string]any, serverTime int64) bool {
-	if len(plans) == 0 || serverTime <= 0 {
-		return false
-	}
-	for _, plan := range plans {
-		if endsAt := core.GetUnixSeconds(plan, "ends_at"); endsAt <= 0 || endsAt > serverTime {
-			return false
-		}
-	}
-	return true
 }
 
 // pendingEffectiveAt 返回套餐里最早一个「尚未生效」的 token 授予时刻（Unix 秒）；

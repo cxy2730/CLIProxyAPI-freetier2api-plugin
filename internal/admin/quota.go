@@ -51,8 +51,11 @@ type quotaResult struct {
 	// HasTotal 报告上游是否真的报了总额。
 	//
 	// 多数渠道（AutoClaw、Raccoon、MiniMax 等）只给余额不给总额；此时 Total
-	// 是 0 而不是「总额为 0」，展示层必须据此显示「余额 / —」，不能把 0 当
-	// 分母拼成「10000 / 0」。
+	// 是 0 而不是「总额为 0」，展示层必须据此显示「余额 / —」。
+	//
+	// 反过来，HasTotal 为真也不代表 Total 大于 0：CodeArts 未开通福利、Qoder
+	// 的 0/0 桶都会给出 total=0。展示层算百分比时必须同时校验 Total > 0，
+	// 否则 0/0 会渲染成 NaN%（见 #71 第二轮复审 P1-1）。
 	HasTotal bool `json:"has_total,omitempty"`
 	// Unlimited 报告剩余额度无上限，展示层据此显示「无限」。
 	Unlimited bool                    `json:"unlimited,omitempty"`
@@ -66,6 +69,27 @@ type quotaResult struct {
 	StaleReason string `json:"stale_reason,omitempty"`
 	// FetchedAt 是这份读数的实际获取时间（RFC3339）。
 	FetchedAt string `json:"fetched_at,omitempty"`
+}
+
+// claimNote 给「有领取状态但没有额度明细」的账号补一句说明。
+//
+// 上游在活动套餐生效前不会生成额度桶：此时 Claim 显示「已领取」，额度却是
+// 空的。不解释一句，页面看上去像取数失败。文案由这里统一生成，而不是让每个
+// 供应商自己拼——说明属于展示层，宿主契约里不该出现插件专用字段。
+//
+// 只陈述能从契约字段推出的事实：这里拿不到套餐到期时间，所以不说「已过期」
+// ——把「不知道」说成「过期」比不说更糟。
+func claimNote(claim *pluginapi.ClaimStatus, result quotaResult) string {
+	if claim == nil || claim.Error != "" {
+		return ""
+	}
+	if len(result.Metrics) > 0 || (result.HasTotal && result.Total > 0) {
+		return ""
+	}
+	if claim.Claimable > 0 {
+		return "有可领取的套餐，领取后才会生成额度"
+	}
+	return "已领取，上游暂未返回额度明细；活动额度通常要几分钟才生效"
 }
 
 // quotaBatchOutcome 是一轮批量查询里单个账号的产出。
@@ -226,6 +250,7 @@ func (s *Service) runQuotaBatch(done chan struct{}, jobs []quotaJob) {
 		if outcome.claim != nil {
 			claims[outcome.result.UID] = state.ClaimRecord{
 				ClaimStatus: *outcome.claim,
+				Note:        claimNote(outcome.claim, outcome.result),
 				CheckedAt:   time.Now().Format(time.RFC3339),
 			}
 		}

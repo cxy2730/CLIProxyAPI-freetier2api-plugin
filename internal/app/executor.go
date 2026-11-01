@@ -423,15 +423,9 @@ func (a *App) handleQuotaFetch(request []byte) ([]byte, error) {
 	// 此前这里直接单发一次 provider.Quota()，于是 MiniMax（access token 只有
 	// 1 小时有效期）在宿主面板上会周期性挂 401，而同一时刻控制台刷新却是好的——
 	// 同一批上游、同一批凭证，两条路径的重试策略不该分裂。
-	response, errQuota := core.QueryWithRetry(ctx,
-		func(credential *core.Credential) (*pluginapi.QuotaFetchResponse, error) {
-			return provider.Quota(ctx, credential)
-		},
-		credential,
-		func() *core.Credential {
-			return a.refreshedQuotaCredential(ctx, "", authID, vendor)
-		},
-	)
+	response, errQuota := queryVendorQuota(ctx, credential, provider, func() *core.Credential {
+		return a.refreshedQuotaCredential(ctx, "", authID, vendor)
+	})
 	if errQuota != nil {
 		// 宿主契约里没有「这是上次的读数」这种表达（QuotaFetchResponse 不带
 		// stale 字段），所以这里不能拿旧值充新值——那会让宿主面板把过期的
@@ -443,6 +437,22 @@ func (a *App) handleQuotaFetch(request []byte) ([]byte, error) {
 		return nil, core.ToPluginError(errQuota)
 	}
 	return core.OKEnvelope(response)
+}
+
+// queryVendorQuota 查一次额度：401 先刷新凭证再重查，传输层故障等待后重查。
+//
+// 抽成包级函数是为了让三种结局都能用假 vendor / 假 refresh 测到——换凭证后
+// 重试成功、刷新拿不到新凭证时保留 401、以及无错时只查一次。这三种结局决定
+// 宿主面板显示的是真额度还是错误（#71 第二轮复审 P2-5）。
+func queryVendorQuota(ctx context.Context, credential *core.Credential, provider core.QuotaProvider,
+	refresh func() *core.Credential) (*pluginapi.QuotaFetchResponse, error) {
+	return core.QueryWithRetry(ctx,
+		func(current *core.Credential) (*pluginapi.QuotaFetchResponse, error) {
+			return provider.Quota(ctx, current)
+		},
+		credential,
+		refresh,
+	)
 }
 
 // refreshedQuotaCredential 在额度查询遇到 401 时保活刷新一次凭证。

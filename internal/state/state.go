@@ -89,6 +89,15 @@ func CheckinHistoryKey(vendorID, accountID string) string {
 // 同一份形状，供应商改字段时这里不用跟着改。
 type ClaimRecord struct {
 	pluginapi.ClaimStatus
+	// Note 是给页面看的说明，不是失败原因。
+	//
+	// 例如「已领取，上游暂未返回额度明细」「有可领取的套餐，领取后才会生成
+	// 额度」。这类文案既不是错误，也不影响能否点击领取；塞进 Error 会让页面
+	// 把「已领取」的账号显示成「可以再领一次」。
+	//
+	// 它是插件自有字段，不进宿主契约（ClaimStatus 是宿主的）：说明文案是
+	// 展示层的事，宿主不需要知道。
+	Note string `json:"note,omitempty"`
 	// CheckedAt 是本次探测时间（RFC3339），页面据此显示「多久前查的」。
 	CheckedAt string `json:"checked_at,omitempty"`
 }

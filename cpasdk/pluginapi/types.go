@@ -1667,12 +1667,6 @@ type ClaimStatus struct {
 	Claimable int `json:"claimable"`
 	// Error 是本次探测失败的原因（成功时为空）。
 	Error string `json:"error,omitempty"`
-	// Note 是给页面看的说明，不是失败原因。
-	//
-	// 例如「套餐已领取，额度 2026-11-02T00:00:00Z 生效」「套餐已过期，无可用
-	// 额度」。这类文案既不是错误，也不影响能否点击领取；塞进 Error 会让页面
-	// 把「已领取」的账号显示成「可以再领一次」。页面按说明渲染即可。
-	Note string `json:"note,omitempty"`
 }
 
 // UnmarshalJSON supports both camelCase and snake_case field names.

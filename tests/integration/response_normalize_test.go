@@ -194,11 +194,13 @@ func TestResponseNormalizeBeforeIgnoresLargeRequestBodies(t *testing.T) {
 		})
 	}
 	smallBytes, largeBytes := allocated(small), allocated(large)
-	// 每次调用的常数开销（JSON 解码缓冲、信封拼接）远小于这个数；
-	// 任何按请求体大小走的分配（4 MiB → 兆级字节）都远超它。
-	const slack = 64 << 10
+	// 容差取 8 KiB：常数开销（JSON 解码缓冲、信封拼接）只有几百字节，而任何
+	// 按请求体大小走的分支都会在 4 MiB 这一侧至少多出兆级分配（光 base64 解码
+	// 就是 3 MiB，再加一份副本）。64 KiB 的余量对 4 MiB 体量太宽——真有按体积
+	// 走的小块分配时抓不住（#71 第二轮复审 P2-10）。
+	const slack = 8 << 10
 	if growth := largeBytes - smallBytes; growth > slack {
-		t.Fatalf("每次调用的分配字节随请求体增长：1KiB=%.0f 4MiB=%.0f（+%.0f 字节）", smallBytes, largeBytes, growth)
+		t.Fatalf("每次调用的分配字节随请求体增长：1KiB=%.0f 4MiB=%.0f（+%.0f 字节，上限 %d）", smallBytes, largeBytes, growth, slack)
 	}
 
 	// 结果本身仍然正确：大请求体不影响信封补全。

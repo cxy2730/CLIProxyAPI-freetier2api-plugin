@@ -100,6 +100,15 @@ func IsDefinitiveFailure(err error) bool {
 	if err == nil {
 		return false
 	}
+	// 凭证侧的状态码同样是确定结论：401/403 换时间重试不会自己好转，凭证
+	// 得重新授权才能用。漏掉这一条会让页面把「凭证已失效」显示成上次的正常
+	// 读数（见 #71 第二轮复审 P2-4）。
+	var pluginErr *PluginError
+	if errors.As(err, &pluginErr) && pluginErr != nil {
+		if pluginErr.HTTPStatus == 401 || pluginErr.HTTPStatus == 403 {
+			return true
+		}
+	}
 	var failure *Failure
 	if !errors.As(err, &failure) {
 		return false

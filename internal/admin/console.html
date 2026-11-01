@@ -1167,9 +1167,6 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     var host = document.getElementById("accounts");
     host.textContent = "";
     var accounts = (status && status.accounts) || [];
-    // 待复核只在「provisional_date 就是今天」时成立。provisional_date 写进去
-    // 后不会自己清，直接判非空会让上周那次待复核一直挂着。
-    var checkinToday = (status && status.checkin_today) || "";
     // 勾选集合按**全部账号**对齐，而不是筛选后的视图：把账号筛掉只是不显示，
     // 不该静默取消勾选（否则「筛一批 → 全选 → 清空筛选 → 执行」会漏目标）。
     var present = {};
@@ -1249,16 +1246,23 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
         if (!supportsCheckin) {
           row.appendChild(el("td", "无签到活动", "muted"));
         } else {
-          var pendingToday = !checkin.last_date && !!checkin.provisional_date &&
-            (!checkinToday || checkin.provisional_date === checkinToday);
-          var checkinCell = el("td", checkin.last_date
-            ? (checkin.last_date + (checkin.streak ? " · 连续 " + checkin.streak + " 天" : ""))
-            : (pendingToday ? (checkin.provisional_date + " · 待复核") : "未签到"));
+          // 今日待复核由后端判定并下发布尔值，前端不自己拼。
+          //
+          // 曾经在前端用「last_date 为空 && provisional_date 是今天」判断，
+          // 但 last_date 只写不清，凡是签过到的账号都恒非空 → 条件永假，
+          // 待复核标记在真实账号上一次都不会出现（见 #71 第二轮复审）。
+          var pendingToday = !!account.checkin_pending;
+          var checkinCell = el("td", pendingToday
+            ? "待复核"
+            : (checkin.last_date
+              ? (checkin.last_date + (checkin.streak ? " · 连续 " + checkin.streak + " 天" : ""))
+              : "未签到"));
           // 待复核：上游在北京时间 12 点前会对还没领到的账号回「已签到」，
           // 此时不能显示成「已签到」，否则用户以为今天领过了。
           if (pendingToday) {
             checkinCell.className = "warn";
-            checkinCell.title = "上游称今日已签到，但北京时间 12 点前上游会误报，后续排程会再确认";
+            checkinCell.title = "上游称今日已签到，但北京时间 12 点前上游会误报，后续排程会再确认" +
+              (checkin.last_date ? "；上次确认签到：" + checkin.last_date : "");
           }
           var history = account.checkin_history || [];
           if (history.length) {
@@ -1326,7 +1330,10 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
             "：" + (quota.stale_reason || "原因未知");
         }
         row.appendChild(remainCell);
-        var ratio = hasTotal ? (quota.remain / quota.total) : 0;
+        // 分母守卫：has_total 只说明上游报了总额键，不保证它大于 0。
+        // CodeArts 未开通福利、Qoder 的 0/0 桶都会给出 total=0，直接相除是
+        // NaN%（页头显示 "NaN%"，见 #71 第二轮复审 P1-1）。
+        var ratio = (hasTotal && quota.total > 0) ? (quota.remain / quota.total) : 0;
         var barCell = el("td");
         if (hasTotal) {
           // 阈值着色：剩余 >=50% 绿 / 20~50% 琥珀 / <20% 红（该列显示的即剩余比例）。

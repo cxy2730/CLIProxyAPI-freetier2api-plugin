@@ -16,6 +16,7 @@ import (
 
 	"freetier2api-plugin/internal/core"
 	"freetier2api-plugin/internal/hostbridge"
+	"freetier2api-plugin/internal/logger"
 )
 
 // Resolver 由根层注入：把原始凭证解析成 (Credential, Vendor)。
@@ -167,7 +168,13 @@ func RefreshCredential(ctx context.Context, pool *Pool, callbackID, authID, vend
 	if keepalive != nil {
 		keepalive()
 	}
-	loaded, _ := pool.Load(ctx, callbackID, Options{Targets: []string{authID}, EnabledRealms: realms})
+	loaded, errLoad := pool.Load(ctx, callbackID, Options{Targets: []string{authID}, EnabledRealms: realms})
+	if errLoad != nil {
+		// 加载失败与「刷新后仍然找不到」表现相同（都返回 nil），不记一笔的话
+		// 凭证服务真挂了，排查时只能看到「凭证缺失」（#71 第二轮复审 P2-6）。
+		logger.Debug("刷新后重新加载凭证失败 auth=%s vendor=%s: %v", authID, vendorID, errLoad)
+		return nil
+	}
 	for _, account := range loaded {
 		if account.Vendor != nil && account.Vendor.ID() == vendorID {
 			return account.Credential
