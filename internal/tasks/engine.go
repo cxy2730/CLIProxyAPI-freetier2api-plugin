@@ -91,14 +91,15 @@ func (s *Service) nextScheduledWake(now time.Time) ([]string, time.Time) {
 // effectiveSchedule 返回生效的排程（页面设置优先于默认值）。
 func (s *Service) effectiveSchedule() map[string][]int {
 	schedule := s.catalog.EffectiveSchedule(s.deps.State().TaskSchedules)
-	// auto_checkin_at 是用户明确配置的签到时刻；未在任务排程里单独覆盖时
-	// 以它为准，否则页面上的设置永远不会生效（默认排程是 9/21 点）。
+	// auto_checkin_at 是用户明确配置的签到时刻，始终并入排程。
+	//
+	// 原先只在「任务排程里没有 checkin 覆盖」时才生效，但 task_schedules 在
+	// 首次启用任务时就会被写入默认值 [9,21]，于是页面上设置的 10:00 永远
+	// 被忽略——表现为「设了自动签到时间不生效」，Qoder 的 10:00 领取窗口
+	// 也永远跑空。这里改成并集：排程里的点保留作重试，设置里的点必定执行。
 	if s.effectiveAutoCheckin() {
-		if _, overridden := s.deps.State().TaskSchedules[core.TaskKindCheckin]; !overridden {
-			if hour, okHour := parseClockHour(s.checkinAt()); okHour {
-				// 保留默认排程点作为重试兜底：签到幂等，多跑一轮只多一次读。
-				schedule[core.TaskKindCheckin] = append([]int{hour}, schedule[core.TaskKindCheckin]...)
-			}
+		if hour, okHour := parseClockHour(s.checkinAt()); okHour {
+			schedule[core.TaskKindCheckin] = mergeHour(schedule[core.TaskKindCheckin], hour)
 		}
 	}
 	return schedule
@@ -110,6 +111,20 @@ func (s *Service) checkinAt() string {
 		return at
 	}
 	return strings.TrimSpace(s.deps.Config().AutoCheckinAt)
+}
+
+// mergeHour 把 hour 并入排程点（去重、保持升序），已有则原样返回。
+func mergeHour(hours []int, hour int) []int {
+	merged := make([]int, 0, len(hours)+1)
+	merged = append(merged, hour)
+	for _, existing := range hours {
+		if existing == hour {
+			continue
+		}
+		merged = append(merged, existing)
+	}
+	sort.Ints(merged)
+	return merged
 }
 
 // parseClockHour 把 HH:MM 转成排程用的整点小时。
