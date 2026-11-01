@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"freetier2api-plugin/cpasdk/pluginabi"
+	"freetier2api-plugin/cpasdk/pluginapi"
 	"freetier2api-plugin/internal/hostbridge"
 )
 
@@ -699,4 +700,87 @@ func TestCampaignWindowDateUsesUTC8(t *testing.T) {
 	if got := campaignWindowDate(campaign); got != "2026-10-21" {
 		t.Errorf("窗口日期 = %s, 期望 2026-10-21", got)
 	}
+}
+
+// TestFetchQuotaReadsOrgResourcePackage 覆盖 issue #70：国内版团队账号的
+// 「资源包」在 orgResourcePackage 里，总额字段叫 cap。
+//
+// 旧实现只读 userQuota / addOnQuota，套餐席位用尽后账号表就一直停在
+// 0/3000，而控制台的用量明细里明明还有 2,000 资源包额度可用。
+func TestFetchQuotaReadsOrgResourcePackage(t *testing.T) {
+	const usage = `{"userQuota":{"total":3000,"used":3000,"remaining":0,"unit":"credits"},` +
+		`"orgResourcePackage":{"used":0,"cap":2000,"remaining":2000,"percentage":0,"available":true,"unit":"credits"}}`
+
+	quota, response := fetchQuotaWithUsage(t, usage)
+
+	if quota.OrgPackage == nil {
+		t.Fatal("未读取到 orgResourcePackage")
+	}
+	if quota.OrgPackage.Total != 2000 || quota.OrgPackage.Remaining != 2000 {
+		t.Errorf("资源包 = %+v, 期望 cap 与 remaining 都是 2000", *quota.OrgPackage)
+	}
+	if got, ok := summaryValue(response.Summary, "org_package_remaining"); !ok || got != 2000 {
+		t.Errorf("org_package_remaining = %v (存在=%v), 期望 2000", got, ok)
+	}
+	if got, ok := summaryValue(response.Summary, "org_package_total"); !ok || got != 2000 {
+		t.Errorf("org_package_total = %v (存在=%v), 期望 2000", got, ok)
+	}
+	found := false
+	for _, group := range response.Groups {
+		if group.DisplayName == "组织资源包" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Groups 缺少「组织资源包」分组: %+v", response.Groups)
+	}
+}
+
+// TestFetchQuotaSkipsUnavailableOrgPackage 覆盖 available=false：过期 /
+// 停用 / 已退还的资源包余额取不出来，按桶不存在处理，否则账号表会显示
+// 一份无法使用的额度。
+func TestFetchQuotaSkipsUnavailableOrgPackage(t *testing.T) {
+	const usage = `{"userQuota":{"total":3000,"used":3000,"remaining":0,"unit":"credits"},` +
+		`"orgResourcePackage":{"used":0,"cap":2000,"remaining":2000,"percentage":0,"available":false,"unit":"credits"}}`
+
+	quota, response := fetchQuotaWithUsage(t, usage)
+
+	if quota.OrgPackage != nil {
+		t.Fatalf("available=false 的资源包不应计入额度，得到 %+v", *quota.OrgPackage)
+	}
+	if _, ok := summaryValue(response.Summary, "org_package_remaining"); ok {
+		t.Error("available=false 的资源包不应输出 org_package_* 摘要")
+	}
+}
+
+// fetchQuotaWithUsage 用给定的额度响应跑一次 FetchQuota，返回原生结果与
+// 归一化后的宿主响应。
+func fetchQuotaWithUsage(t *testing.T, usageBody string) (*Quota, pluginapi.QuotaFetchResponse) {
+	t.Helper()
+	upstream := &stubUpstream{responses: map[string]testhostResponse{}}
+	upstream.responses["GET https://openapi.qoder.com.cn/api/v2/quota/usage"] = testhostResponse{
+		status: http.StatusOK,
+		body:   usageBody,
+	}
+	upstream.responses["GET https://openapi.qoder.com.cn/api/v2/user/plan"] = testhostResponse{
+		status: http.StatusOK,
+		body:   `{"plan_tier_name":"Teams"}`,
+	}
+	installStubHost(t, upstream)
+
+	quota, errQuota := FetchQuota(context.Background(), &Credential{Token: "dt-test", Region: RegionCN})
+	if errQuota != nil {
+		t.Fatalf("FetchQuota 返回错误: %v", errQuota)
+	}
+	return quota, BuildQuotaResponse(quota)
+}
+
+// summaryValue 取摘要里某个键的值；键不存在时返回 0 与 false。
+func summaryValue(metrics []pluginapi.QuotaMetric, key string) (float64, bool) {
+	for _, metric := range metrics {
+		if metric.Key == key {
+			return metric.Value, true
+		}
+	}
+	return 0, false
 }
