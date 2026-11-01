@@ -1517,19 +1517,23 @@ func waitGrowthClaimable(ctx context.Context, client *Client, credential *Creden
 	if mp {
 		attempts = 2
 	}
-	for attempt := 1; attempt < attempts; attempt++ {
+	for attempt := 1; attempt <= attempts; attempt++ {
+		// 先查后等：任务刚创建时多数已经可领，无脑先睡 3 秒纯属白等，
+		// 每个任务白白多花 3~9 秒。
+		task, errTask := findGrowthTask(ctx, client, credential, code)
+		if errTask == nil {
+			if task == nil || task.Claimed {
+				return false
+			}
+			if task.Claimable() || task.Done() {
+				return true
+			}
+		}
+		if attempt == attempts {
+			break
+		}
 		if !core.SleepContext(ctx, 3*time.Second) {
 			return false
-		}
-		task, errTask := findGrowthTask(ctx, client, credential, code)
-		if errTask != nil {
-			continue
-		}
-		if task == nil || task.Claimed {
-			return false
-		}
-		if task.Claimable() || task.Done() {
-			return true
 		}
 	}
 	return false
