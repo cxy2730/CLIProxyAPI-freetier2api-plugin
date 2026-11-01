@@ -13,8 +13,8 @@ package opencodezen
 // 适配器与协议实现同包：适配层不再放在根层，根层只负责注册。
 
 import (
+	"bytes"
 	"context"
-	"fmt"
 	"strings"
 
 	"freetier2api-plugin/cpasdk/pluginapi"
@@ -81,7 +81,7 @@ func (v *adapter) Match(fileName, provider string, raw map[string]any) bool {
 func (v *adapter) StaticModels(ctx context.Context) ([]pluginapi.ModelInfo, error) {
 	apiKey := v.probeAPIKey()
 	if apiKey == "" {
-		return nil, fmt.Errorf("no opencodezen credential available for model probe")
+		apiKey = freeTierCredential
 	}
 	models, errModels := FetchModels(ctx, v.baseURL, apiKey)
 	if errModels != nil {
@@ -107,7 +107,11 @@ func (v *adapter) ModelsForAuth(ctx context.Context, cred *core.Credential) ([]p
 	if errNative != nil {
 		return nil, errNative
 	}
-	models, errModels := FetchModels(ctx, v.baseURL, native.APIKey)
+	apiKey := native.APIKey
+	if strings.TrimSpace(apiKey) == "" {
+		apiKey = freeTierCredential
+	}
+	models, errModels := FetchModels(ctx, v.baseURL, apiKey)
 	if errModels != nil {
 		// 探测失败返回空清单而不是报错：宿主会因为空清单跳过该凭证，
 		// 这正是我们想要的结果（避免用坏 key 打上游）。
@@ -184,6 +188,7 @@ func (v *adapter) Execute(ctx context.Context, cred *core.Credential, req *core.
 	payload, errChat := Chat(ctx, v.baseURL, ChatRequest{
 		APIKey:  native.APIKey,
 		Body:    req.Payload,
+		Headers: req.Headers,
 		Stream:  false,
 		Catalog: v.catalog(ctx),
 	})
@@ -205,9 +210,10 @@ func (v *adapter) ExecuteStream(ctx context.Context, cred *core.Credential, req 
 	if errNative != nil {
 		return errNative
 	}
-	resp, errStream := ChatStream(ctx, v.baseURL, ChatRequest{
+	resp, renames, errStream := ChatStream(ctx, v.baseURL, ChatRequest{
 		APIKey:  native.APIKey,
 		Body:    req.Payload,
+		Headers: req.Headers,
 		Stream:  true,
 		Catalog: v.catalog(ctx),
 	})
@@ -215,7 +221,19 @@ func (v *adapter) ExecuteStream(ctx context.Context, cred *core.Credential, req 
 		return core.ToPluginError(errStream)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	return hostbridge.ForwardRawSSE(resp.Body, sink.Emit)
+
+	emit := sink.Emit
+	if renames != nil && len(renames.toClient) > 0 {
+		emit = func(chunk []byte) error {
+			if bytes.Contains(chunk, []byte(clientToolPrefix)) {
+				for wire, client := range renames.toClient {
+					chunk = bytes.ReplaceAll(chunk, []byte(wire), []byte(client))
+				}
+			}
+			return sink.Emit(chunk)
+		}
+	}
+	return hostbridge.ForwardRawSSE(resp.Body, emit)
 }
 
 // catalog 取 models.dev 目录，用于按单价判定免费层。

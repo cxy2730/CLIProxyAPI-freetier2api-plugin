@@ -42,8 +42,6 @@ If this project helps you, a Star would mean a lot.
 | `minimaxcodecn` | MiniMax Code CN | `cn` | OAuth Device Flow | `minimaxcodecn-*.json` |
 | `minimaxcodeglobal` | MiniMax Code Global | `global` | OAuth Device Flow | `minimaxcodeglobal-*.json` |
 
-> Legacy ZCode credentials (`zcode-*.json`) still load: routed by `region`, defaulting to Global when absent, and the file name is kept unchanged. Existing `zcode:<model>` entries in `disabled_models` and model aliases keep resolving to `zcodeglobal` (only the global realm existed before the split).
-
 ## Quick Start
 
 ### Option 1: Install via CPA Plugin Store (Recommended)
@@ -120,37 +118,6 @@ In the Models table of the console, click any model ID or its `✎` icon to assi
 The Accounts table shows whatever nickname or email the upstream returns, and some platforms only hand out a default nickname that cannot be changed — with several accounts it becomes impossible to tell them apart. Click the account name or its `✎` icon to set a custom alias; the editor is prefilled with the current name, and the display order becomes **alias → upstream nickname/email → file name → account ID**. Saving an empty value, or typing the original name back, means "no alias" — the record is cleared and the upstream name is used, so behavior is unchanged when no alias is set.
 
 Aliases are stored in `state.json` under `account_aliases`, keyed by account identity (the credential file name, i.e. `core.Credential.FileID`) rather than by nickname or token, so they survive token refresh and re-login into the same credential file.
-
-### 5. Account Batch Actions
-
-The Accounts table has a selection column like the Models table. The toolbar reads **Add account / Disable selected / Enable selected / Select all / Clear / Token refresh / Query quota / Check in / Run tasks / Delete**, followed by a filter box that matches provider, account name, alias or file name (never credential contents):
-
-- Nothing is selected by default. Delete is disabled while the selection is empty, and Token refresh, Query quota, Check in and Run tasks act on **all accounts**;
-- With a selection, those actions only touch the selected accounts. The selection survives table refreshes, and accounts that disappear drop out of it automatically;
-- Filtering only changes which rows are visible: Select all / Clear act on the visible rows, accounts hidden by the filter keep their selection, and batch actions still run against the full selection;
-- Disabling is not deleting: it only writes the host's `disabled` flag into the credential JSON (token and file are kept, so it is reversible). Delete removes the credential file;
-- Delete still takes two clicks: the first arms the button (auto-reset after 5 seconds), the second deletes.
-
-### 6. CodeArts Check-in and Inference Channels
-
-Benefit claims use the existing **Check in** toolbar action and **daily automatic check-in**. Select the CodeArts account and click Check in; no separate claim button is added.
-
-Credit check-in and free benefit tokens are independent entitlements. The plugin reads `benefit-gateway-config` and only claims tokens when `enabled: true`. Already-completed credit check-ins, missing credit campaigns, and credit-claim failures do not skip an available benefit claim. When the gateway is disabled, only credit check-in runs and the result explicitly says the free benefit channel is unavailable. Check-in cannot restore upstream entitlements that have been disabled.
-
-Within one plugin process, a successful benefit claim is remembered per account and Beijing calendar day. Further check-ins return "already claimed" without another claim request. Failures remain retryable. After restart the process queries upstream again; `4000`, `4006`, or a successful credit check-in are never treated as proof that benefit tokens were claimed. Partial failures keep both outcomes and do not mark the entire day complete. Quota queries and model refreshes do not claim benefits.
-
-**Credit inference is disabled by default.** To explicitly allow consumption of the account's CodeArts credits, configure the host's `config.yaml`:
-
-```yaml
-plugins:
-  configs:
-    freetier2api:
-      codearts_credit_enabled: true
-```
-
-Refresh the model catalog after the configuration takes effect. Enabled mode uses only the account's actual built-in catalog, omits `maas_type: benefit` on inference, and consumes credits according to upstream billing. A missing, false, or invalid setting retains the existing benefit channel. Failed requests never switch channels or choose another model automatically. Use `codearts:<modelID>` when routing must stay with this vendor.
-
-Observed on 2026-10-31: the benefit gateway returned `enabled: false`, legacy claim requests returned `4000 invalid channel, group not found`, and the same account successfully used `deepseek-v4.1-flash-1017` on the credit channel. Claiming benefits cannot repair inference in that state; credit mode requires explicit operator opt-in. Automatic check-in continues to use `auto_checkin` / `auto_checkin_at`.
 
 ## Configuration
 

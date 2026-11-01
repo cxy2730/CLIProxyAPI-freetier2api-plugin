@@ -366,8 +366,8 @@ func TestCheckinAutoRefreshesOn401(t *testing.T) {
 		case "host.auth.get":
 			return json.Marshal(map[string]any{
 				"auth_index": "user1.json",
-				"name": "user1.json",
-				"json": []byte(`{"token":"expired-token"}`),
+				"name":       "user1.json",
+				"json":       []byte(`{"token":"expired-token"}`),
 			})
 		}
 		return nil, fmt.Errorf("unexpected method: %s", method)
@@ -378,7 +378,6 @@ func TestCheckinAutoRefreshesOn401(t *testing.T) {
 	deps.pool = pool
 	deps.registry = reg
 	service := New(deps)
-
 
 	result, err := service.Checkin(context.Background(), vendor, cred, CheckinTriggerSchedule)
 	if err != nil {

@@ -6,7 +6,10 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 )
 
 // 本文件锁定 ZEN session ID 的编码规则。
@@ -116,6 +119,9 @@ func TestApplyChatHeadersCarriesSessionMirrors(t *testing.T) {
 	if got := req.Header.Get("User-Agent"); got != UserAgent() {
 		t.Fatalf("User-Agent = %q", got)
 	}
+	if proj := req.Header.Get("x-opencode-project"); len(proj) != 40 || proj == "global" {
+		t.Fatalf("x-opencode-project = %q，期望 40 位非 global 十六进制", proj)
+	}
 }
 
 func TestChatEndpointUsesInferenceLane(t *testing.T) {
@@ -148,7 +154,7 @@ func TestNewChatRequestFreeTierUsesAnonymousCredential(t *testing.T) {
 		"mimo-v2.6-flash-free": {Cost: &modelsDevCost{}},
 	}
 	body := []byte(`{"model":"mimo-v2.6-flash-free","messages":[{"role":"user","content":"hi"}]}`)
-	req, errReq := newChatRequest(context.Background(), "", ChatRequest{APIKey: "oc_sk_secret", Body: body}, catalog)
+	req, _, errReq := newChatRequest(context.Background(), "", ChatRequest{APIKey: "oc_sk_secret", Body: body}, catalog)
 	if errReq != nil {
 		t.Fatalf("newChatRequest: %v", errReq)
 	}
@@ -208,7 +214,7 @@ func TestNewChatRequestPaidKeepsUserCredential(t *testing.T) {
 		"glm-5.3": {Cost: &modelsDevCost{Input: 1.5, Output: 6}},
 	}
 	body := []byte(`{"model":"glm-5.3","messages":[{"role":"user","content":"hi"}]}`)
-	req, errReq := newChatRequest(context.Background(), "", ChatRequest{APIKey: "oc_sk_secret", Body: body}, catalog)
+	req, _, errReq := newChatRequest(context.Background(), "", ChatRequest{APIKey: "oc_sk_secret", Body: body}, catalog)
 	if errReq != nil {
 		t.Fatalf("newChatRequest: %v", errReq)
 	}
@@ -266,4 +272,109 @@ func decodeJSON(t *testing.T, raw []byte) map[string]any {
 		t.Fatalf("unmarshal body: %v", errUnmarshal)
 	}
 	return payload
+}
+
+// TestDescendingTimePartDecodesToRecentTimestamp 验证时间戳锚定在近期，而不是旧实现的 1970 年。
+func TestDescendingTimePartDecodesToRecentTimestamp(t *testing.T) {
+	now := time.Now().UTC()
+	hash := []byte{0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc}
+	part := descendingTimePart(now, hash)
+
+	if len(part) != 12 {
+		t.Fatalf("timePart 长度 = %d，期望 12", len(part))
+	}
+
+	// 解码 ~(ts_ms << 12 | counter)
+	inverted, errParse := strconv.ParseUint(part, 16, 64)
+	if errParse != nil {
+		t.Fatalf("ParseUint: %v", errParse)
+	}
+	current := ^inverted & 0xFFFFFFFFFFFF
+	tsLow36 := current >> 12
+
+	// 官方 48 位降序标识中，高 36 位为毫秒时间戳的低 36 位
+	nowLow36 := uint64(now.UnixMilli()) & 0xFFFFFFFFF
+	windowMs := uint64(sessionTimestampWindow / time.Millisecond)
+
+	// tsLow36 应当在 [nowLow36 - windowMs - 1天, nowLow36 + 1天] 范围内（允许时区整天截断）
+	diff := (nowLow36 - tsLow36) & 0xFFFFFFFFF
+	if diff > windowMs+uint64(24*time.Hour/time.Millisecond) {
+		t.Fatalf("解码时间戳低36位偏差 %d ms，超出 30 天窗口 %d ms", diff, windowMs)
+	}
+}
+
+// TestCanonicalSessionIDSaltedByBootNonce 验证不同进程盐值会产出不同的 session。
+func TestCanonicalSessionIDSaltedByBootNonce(t *testing.T) {
+	original := bootNonce
+	defer func() { bootNonce = original }()
+
+	bootNonce = []byte("salt-1----------")
+	first := canonicalSessionID("user-turn-1")
+	bootNonce = []byte("salt-2----------")
+	second := canonicalSessionID("user-turn-1")
+
+	if first == second {
+		t.Fatalf("更换盐值后 session 未改变：%q", first)
+	}
+}
+
+// TestPrepareFreeTierBodyHidesClientToolNames 验证客户端工具名被混淆并不暴露原始特征。
+func TestPrepareFreeTierBodyHidesClientToolNames(t *testing.T) {
+	body := []byte(`{
+		"model": "deepseek-v4.1-flash-free",
+		"messages": [
+			{"role": "user", "content": "hi"},
+			{"role": "assistant", "content": "", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "ReportFindings", "arguments": "{}"}}]}
+		],
+		"tools": [
+			{"type": "function", "function": {"name": "ReportFindings", "description": "Report findings", "parameters": {}}},
+			{"type": "function", "function": {"name": "ScheduleWakeup", "description": "Schedule a wakeup", "parameters": {}}}
+		],
+		"tool_choice": {"type": "function", "function": {"name": "ReportFindings"}}
+	}`)
+
+	shaped, renames := prepareFreeTierBody(body)
+	if renames == nil {
+		t.Fatal("未返回 renames 映射")
+	}
+
+	shapedStr := string(shaped)
+	for _, marker := range []string{"ReportFindings", "ScheduleWakeup"} {
+		if strings.Contains(shapedStr, marker) {
+			t.Fatalf("混淆后的请求体仍包含特征工具名 %q", marker)
+		}
+	}
+
+	wireReport, ok := renames.toWire["ReportFindings"]
+	if !ok || !strings.HasPrefix(wireReport, clientToolPrefix) {
+		t.Fatalf("ReportFindings 未被混淆为 clint_ 开头：%q", wireReport)
+	}
+
+	// 验证 CollapseSSEToJSON 还原工具名
+	sseInput := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"" + wireReport + "\",\"arguments\":\"{}\"}}]}}]}" + "\n\ndata: [DONE]\n\n"
+	collapsed, errCollapse := CollapseSSEToJSON(strings.NewReader(sseInput), "deepseek-v4.1-flash-free", renames)
+	if errCollapse != nil {
+		t.Fatalf("CollapseSSEToJSON: %v", errCollapse)
+	}
+	if !strings.Contains(string(collapsed), "ReportFindings") {
+		t.Fatalf("合并结果未还原原始工具名：%s", string(collapsed))
+	}
+}
+
+// TestEnsureCompletionLimit 验证上限归一与默认 32000。
+func TestEnsureCompletionLimit(t *testing.T) {
+	p1 := map[string]any{"model": "test"}
+	ensureCompletionLimit(p1)
+	if p1["max_completion_tokens"] != 32000 {
+		t.Fatalf("默认上限期望 32000，得到 %v", p1["max_completion_tokens"])
+	}
+
+	p2 := map[string]any{"max_tokens": 128}
+	ensureCompletionLimit(p2)
+	if p2["max_completion_tokens"] != 128 {
+		t.Fatalf("max_tokens 应被归一，得到 %v", p2["max_completion_tokens"])
+	}
+	if _, hasMax := p2["max_tokens"]; hasMax {
+		t.Fatal("max_tokens 应被删除")
+	}
 }
