@@ -298,7 +298,7 @@ func (v *adapter) TaskSpecs() []core.TaskSpec {
 	return []core.TaskSpec{{
 		Kind:        TaskKindUG,
 		Label:       "活动福利领取",
-		Description: "领取 Trae 国内版的竞赛奖励与作品抽奖",
+		Description: "领取 Trae 国内版活动福利：活动中心（竞赛、作品、新用户等）与分享裂变积分",
 		// Route 让控制台按 ManualSpecs 自动出现手动触发入口：宿主只注册带
 		// Route 的手动族（admin 里 Route 为空直接跳过），少了它这个「手动族」
 		// 就只能靠手改排程配置触发。
