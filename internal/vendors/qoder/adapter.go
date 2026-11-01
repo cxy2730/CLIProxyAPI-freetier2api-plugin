@@ -535,6 +535,29 @@ func (r *payloadRecorder) Payload() []byte { return r.body }
 
 func (v *adapter) SupportsCheckin() bool { return true }
 
+// RunAllTasks 执行一键任务。Qoder 的活动福利只有一条链路：每日领取
+// 会把当天开放的 campaign（活动）一并领取，协议层的 Checkin 已经覆盖，
+// 所以这里只产出签到那一行，不额外造空行。
+func (v *adapter) RunAllTasks(ctx context.Context, cred *core.Credential) []core.AutoTaskResult {
+	results := make([]core.AutoTaskResult, 0, 1)
+	if row := core.CheckinAutoTask(ctx, v, cred); row != nil {
+		results = append(results, *row)
+	}
+	return results
+}
+
+// RunTask 执行单条任务。Qoder 可自动执行的动作只有签到/活动领取。
+func (v *adapter) RunTask(ctx context.Context, cred *core.Credential, code string) (core.TaskRunResult, error) {
+	if strings.TrimSpace(code) != core.AutoTaskCodeCheckin {
+		return core.TaskRunResult{Status: "skipped", Message: "该供应商没有这条任务"}, nil
+	}
+	row := core.CheckinAutoTask(ctx, v, cred)
+	if row == nil {
+		return core.TaskRunResult{Status: "skipped", Message: "该账号不支持签到"}, nil
+	}
+	return core.TaskRunResult{Status: row.Status, Message: row.Message, Credit: row.Credit, Energy: row.Energy}, nil
+}
+
 // 编译期断言：适配器实际具备的供应商能力。
 var (
 	_ core.Vendor               = (*adapter)(nil)
@@ -547,4 +570,5 @@ var (
 	_ core.ModelsProvider       = (*adapter)(nil)
 	_ core.QuotaProvider        = (*adapter)(nil)
 	_ core.StorageMerger        = (*adapter)(nil)
+	_ core.TaskRunner           = (*adapter)(nil)
 )

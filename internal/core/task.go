@@ -132,3 +132,51 @@ type ScheduledRunner interface {
 type TaskPreparer interface {
 	PrepareTasks(ctx context.Context, cred *Credential) int
 }
+
+// 一键任务里代表「签到」那一行的任务码。
+//
+// 各供应商的签到本身就是它们最主要的每日福利（autoclaw 的登录活跃、
+// minimaxcode 的每日礼包、raccoon 的桌面端登录积分都在这里），因此
+// 一键任务把它当成一条普通任务执行，而不是另开一个按钮。
+const AutoTaskCodeCheckin = "(签到)"
+
+// CheckinAutoTask 把供应商的签到折叠成一键任务里的一行。
+//
+// 返回 nil 表示该账号不该出现这一行：供应商没有签到能力、或该账号天生
+// 不支持签到（CheckinCapability 判定）。调用方直接跳过即可，不要落
+// skipped 行——那会让用户以为「本该有但失败了」。
+func CheckinAutoTask(ctx context.Context, vendor Vendor, cred *Credential) *AutoTaskResult {
+	provider, okProvider := As[CheckinProvider](vendor)
+	if !okProvider || provider == nil || !provider.SupportsCheckin() {
+		return nil
+	}
+	if capable, okCapable := As[CheckinCapability](vendor); okCapable && !capable.SupportsCheckinFor(cred) {
+		return nil
+	}
+	res, err := provider.Checkin(ctx, cred)
+	if err != nil {
+		return &AutoTaskResult{Code: AutoTaskCodeCheckin, Status: "error", Message: err.Error()}
+	}
+	if res == nil {
+		return nil
+	}
+	status := "done"
+	if res.Already {
+		status = "skipped"
+	}
+	message := res.Message
+	if message == "" {
+		if res.Already {
+			message = "今日已签到"
+		} else {
+			message = "签到成功"
+		}
+	}
+	return &AutoTaskResult{
+		Code:    AutoTaskCodeCheckin,
+		Status:  status,
+		Message: message,
+		Credit:  res.Credit,
+		Energy:  res.Energy,
+	}
+}

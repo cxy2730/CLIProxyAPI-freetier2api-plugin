@@ -286,6 +286,21 @@ func fetchAccountInfo(ctx context.Context, cred *Credential) (*accountInfo, erro
 
 // fetchDailyActivity 查询活动列表并挑出每日登录领取条目。
 func fetchDailyActivity(ctx context.Context, cred *Credential) (*opsActivity, error) {
+	activities, errFetch := fetchOpsActivities(ctx, cred)
+	if errFetch != nil {
+		return nil, errFetch
+	}
+	for _, activity := range activities {
+		if activity.Type == OpsDailyLoginType {
+			return activity, nil
+		}
+	}
+	return nil, nil
+}
+
+// fetchOpsActivities 拉取活动列表全部条目。签到只吃每日登录那一条，
+// 一键任务要吃剩下的全部可领活动，所以两边共用这一份解析。
+func fetchOpsActivities(ctx context.Context, cred *Credential) ([]*opsActivity, error) {
 	url := SnapEngineApiHost + EpOpsDelivery + "?channel=" + OpsChannel
 	data, errFetch := signedSnapJSON(ctx, http.MethodGet, url, cred, nil)
 	if errFetch != nil {
@@ -295,20 +310,25 @@ func fetchDailyActivity(ctx context.Context, cred *Credential) (*opsActivity, er
 	if !okItems {
 		return nil, fmt.Errorf("活动列表响应缺少 items 字段")
 	}
+	activities := make([]*opsActivity, 0, len(items))
 	for _, item := range items {
 		record, okRecord := item.(map[string]any)
-		if !okRecord || text(record, "type") != OpsDailyLoginType {
+		if !okRecord {
 			continue
 		}
-		return &opsActivity{
-			CampaignID: identifier(record, "campaignId"),
+		campaignID := identifier(record, "campaignId")
+		if campaignID == "" {
+			continue
+		}
+		activities = append(activities, &opsActivity{
+			CampaignID: campaignID,
 			Type:       text(record, "type"),
 			Claimable:  boolValue(record, "claimable"),
 			Status:     text(record, "status"),
 			Amount:     firstInt(record, "benefitAmount", "amount", "creditAmount"),
-		}, nil
+		})
 	}
-	return nil, nil
+	return activities, nil
 }
 
 // signedSnapJSON 发一次 snap-access 签名请求并解开 {code,message,data} 信封。

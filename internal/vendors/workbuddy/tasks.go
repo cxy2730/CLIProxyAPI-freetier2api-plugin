@@ -1379,6 +1379,37 @@ func mergeTasks(primary, extra []Task) []Task {
 // ---- 任务执行 ----
 
 func (v *adapter) RunTask(ctx context.Context, cred *core.Credential, code string) (core.TaskRunResult, error) {
+	trimmed := strings.TrimSpace(code)
+	if trimmed == core.AutoTaskCodeCheckin {
+		row := core.CheckinAutoTask(ctx, v, cred)
+		if row == nil {
+			return core.TaskRunResult{Status: "skipped", Message: "该账号不支持签到"}, nil
+		}
+		return core.TaskRunResult{Status: row.Status, Message: row.Message}, nil
+	}
+	// 活动族：与一键任务里那几行走同一套 RunScheduled。
+	for _, family := range []struct {
+		code string
+		kind string
+	}{
+		{AutoTaskCodeTravel, TaskKindTravel},
+		{AutoTaskCodeActivity, TaskKindActivity},
+		{AutoTaskCodeBlackcat, TaskKindBlackcat},
+		{AutoTaskCodeSchool, TaskKindSchool},
+		{AutoTaskCodeStreak, TaskKindStreak},
+	} {
+		if trimmed != family.code {
+			continue
+		}
+		message, errFamily := v.RunScheduled(ctx, cred, family.kind)
+		if errFamily != nil {
+			return core.TaskRunResult{}, errFamily
+		}
+		if message == "" {
+			return core.TaskRunResult{Status: "skipped", Message: "当前无需动作（不在窗口或已完成）"}, nil
+		}
+		return core.TaskRunResult{Status: "done", Message: message}, nil
+	}
 	if v.region.IsGlobal() {
 		return core.TaskRunResult{Status: "skipped", Message: "国际版账号没有成长任务"}, nil
 	}
@@ -1387,7 +1418,7 @@ func (v *adapter) RunTask(ctx context.Context, cred *core.Credential, code strin
 		return core.TaskRunResult{}, err
 	}
 	client := v.client(ctx)
-	if strings.TrimSpace(code) == "school_daily" {
+	if trimmed == "school_daily" {
 		message, errRun := RunSchool(ctx, client, native)
 		if errRun != nil {
 			return core.TaskRunResult{}, errRun
@@ -1416,16 +1447,31 @@ func (v *adapter) PrepareTasks(ctx context.Context, cred *core.Credential) int {
 	return acceptPendingTasks(ctx, v.client(ctx), native)
 }
 
+// 一键任务里代表各活动族的那一行任务码。它们与定时排程的 kind 一一对应，
+// 复用 RunScheduled 的实现，避免两套逻辑各自漂移。
+const (
+	AutoTaskCodeTravel   = "(猫猫旅行)"
+	AutoTaskCodeActivity = "(活跃上报)"
+	AutoTaskCodeBlackcat = "(夜猫子)"
+	AutoTaskCodeSchool   = "(开学季)"
+	AutoTaskCodeStreak   = "(连登奖励)"
+)
+
 func (v *adapter) RunAllTasks(ctx context.Context, cred *core.Credential) []core.AutoTaskResult {
-	if v.region.IsGlobal() {
-		return nil
+	results := make([]core.AutoTaskResult, 0, len(autoActions)+7)
+	if row := core.CheckinAutoTask(ctx, v, cred); row != nil {
+		results = append(results, *row)
 	}
 	native, err := v.Native(cred)
 	if err != nil {
-		return []core.AutoTaskResult{{Code: "(账号)", Status: "error", Message: err.Error()}}
+		return append(results, core.AutoTaskResult{Code: "(账号)", Status: "error", Message: err.Error()})
 	}
 	client := v.client(ctx)
-	results := make([]core.AutoTaskResult, 0, len(autoActions)+1)
+	if v.region.IsGlobal() {
+		// 国际版没有成长任务体系：可自动领取的福利只有每日活跃奖励，
+		// 已由上面的签到行覆盖，这里不再补空行。
+		return results
+	}
 	if accepted := acceptPendingTasks(ctx, client, native); accepted > 0 {
 		results = append(results, core.AutoTaskResult{
 			Code: "(批量报名)", Status: "done",
@@ -1468,6 +1514,29 @@ func (v *adapter) RunAllTasks(ctx context.Context, cred *core.Credential) []core
 		}
 		results = append(results, result)
 		core.SleepContext(ctx, 1050*time.Millisecond)
+	}
+	// 成长任务之外的活动福利：猫猫旅行、活跃/连登上报、夜猫子、开学季、
+	// 连登奖励。它们原本只在定时排程里跑，一键任务里缺一块，用户点了
+	// 「一键做任务」也拿不到这部分奖励。
+	for _, family := range []struct {
+		code string
+		kind string
+	}{
+		{AutoTaskCodeTravel, TaskKindTravel},
+		{AutoTaskCodeActivity, TaskKindActivity},
+		{AutoTaskCodeBlackcat, TaskKindBlackcat},
+		{AutoTaskCodeSchool, TaskKindSchool},
+		{AutoTaskCodeStreak, TaskKindStreak},
+	} {
+		message, errFamily := v.RunScheduled(ctx, cred, family.kind)
+		switch {
+		case errFamily != nil:
+			results = append(results, core.AutoTaskResult{Code: family.code, Status: "error", Message: errFamily.Error()})
+		case message == "":
+			// 空消息表示本次无需动作（不在窗口 / 活动期外），不占一行。
+		default:
+			results = append(results, core.AutoTaskResult{Code: family.code, Status: "done", Message: message})
+		}
 	}
 	return results
 }
