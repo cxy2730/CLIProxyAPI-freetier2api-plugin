@@ -355,37 +355,69 @@ const (
 	queueMaxConcurrency = 4
 )
 
-func (s *Service) tryLockAccount(uid string) bool {
+// accountLock 取某个账号的锁句柄（容量 1 的 channel，持有即已放入一个值）。
+//
+// 用 channel 而不是 sync.Mutex：Mutex.Lock 不可取消，批量任务在 ctx 被取消后
+// 仍会永久卡在 Lock 上；channel 版本能和 ctx.Done() 一起 select，取消即走。
+func (s *Service) accountLock(uid string) chan struct{} {
 	trimmed := strings.TrimSpace(uid)
 	if trimmed == "" {
-		return false
+		return nil
 	}
 	s.taskLockMu.Lock()
 	if s.taskLocks == nil {
-		s.taskLocks = map[string]*sync.Mutex{}
+		s.taskLocks = map[string]chan struct{}{}
 	}
 	lock, okLock := s.taskLocks[trimmed]
 	if !okLock {
-		lock = &sync.Mutex{}
+		lock = make(chan struct{}, 1)
 		s.taskLocks[trimmed] = lock
 	}
 	s.taskLockMu.Unlock()
-	return lock.TryLock()
+	return lock
+}
+
+// tryLockAccount 非阻塞抢锁。手动单任务用这个：抢不到就明确告诉用户
+// 「该账号有任务正在执行」，不让人对着转圈等。
+func (s *Service) tryLockAccount(uid string) bool {
+	lock := s.accountLock(uid)
+	if lock == nil {
+		return false
+	}
+	select {
+	case lock <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+// lockAccount 排队等锁，ctx 取消时返回错误。
+//
+// 批量动作（一键完成、任务队列）必须用这个：它们和彼此抢的是同一把账号锁，
+// 抢不到就跳过会让用户看到一堆「该账号有其它任务动作在执行」的假失败——
+// 实际上只是排在后面。排队是正确语义，跳过不是。
+func (s *Service) lockAccount(ctx context.Context, uid string) error {
+	lock := s.accountLock(uid)
+	if lock == nil {
+		return fmt.Errorf("账号标识为空，无法排队")
+	}
+	select {
+	case lock <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *Service) unlockAccount(uid string) {
-	trimmed := strings.TrimSpace(uid)
-	if trimmed == "" {
+	lock := s.accountLock(uid)
+	if lock == nil {
 		return
 	}
-	s.taskLockMu.Lock()
-	if s.taskLocks == nil {
-		s.taskLocks = map[string]*sync.Mutex{}
-	}
-	lock, okLock := s.taskLocks[trimmed]
-	s.taskLockMu.Unlock()
-	if okLock {
-		lock.Unlock()
+	select {
+	case <-lock:
+	default:
 	}
 }
 
@@ -582,8 +614,8 @@ func (s *Service) runQueueItems(callbackID string, concurrency int, seq int64) {
 
 	auth.RunBatch(jobs, concurrency, func(job queueJob) struct{} {
 		target := job.account
-		if !s.tryLockAccount(target.uid()) {
-			s.markQueueItems(job.indices, "skipped", "该账号有其它任务动作在执行", 0, 0)
+		if errLock := s.lockAccount(ctx, target.uid()); errLock != nil {
+			s.markQueueItems(job.indices, "skipped", "等待该账号的其它任务超时："+errLock.Error(), 0, 0)
 			return struct{}{}
 		}
 		defer s.unlockAccount(target.uid())

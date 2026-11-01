@@ -3084,14 +3084,28 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   // 这是耗时操作（含真实对话），后端已经改成后台任务：POST 只负责启动并
   // 返回任务编号，页面按 3 秒轮询进度，跑完再一次性汇报结果。
   document.getElementById("btnAutoAll").addEventListener("click", function () {
+    var btn = this;
     var ids = selectedAccountIDs();
     var scope = ids.length ? ids.length + " 个选中账号" : "全部账号";
-    if (!window.confirm("将对" + scope + "依次执行成长任务一键完成。\n\n"
-      + "专家类、技能、夜猫子任务含真实对话，会消耗账号额度；\n"
-      + "每个账号约需 1-2 分钟，账号多时请耐心等待。\n\n确认继续？")) {
+    // 不用 window.confirm：控制台常被嵌在 CPA 面板的 iframe 里，部分浏览器
+    // 会直接拦掉 confirm 且不抛错，表现成「点了没反应」。改成按钮自身两段式
+    // 确认——第一次点只改文案并给出风险提示，5 秒内再点才真正执行，
+    // iframe 内外行为一致，也顺手挡住了误点。
+    if (!btn.dataset.armed) {
+      btn.dataset.armed = "1";
+      btn.textContent = "再点一次确认（" + scope + "）";
+      banner("warn", "将对" + scope + "依次执行一键完成：专家类、技能、夜猫子任务含真实对话，"
+        + "会消耗账号额度；每个账号约需 1-2 分钟。5 秒内再点一次开始。", 5000);
+      setTimeout(function () {
+        if (btn.dataset.armed) {
+          delete btn.dataset.armed;
+          btn.textContent = "一键做任务";
+        }
+      }, 5000);
       return;
     }
-    var btn = this;
+    delete btn.dataset.armed;
+    btn.textContent = "一键做任务";
     btn.disabled = true;
     banner("ok", "已在后台开始逐账号执行一键完成…", 0);
     api("POST", "/tasks/auto_all", { account_ids: ids }).then(function () {
