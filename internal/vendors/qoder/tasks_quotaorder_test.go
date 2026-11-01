@@ -135,7 +135,7 @@ func TestBuildQuotaResponseHeadlineMatchesUsableBucket(t *testing.T) {
 		AddonQuota: &QuotaBucket{Used: 3000, Total: 3000, Remaining: 0},
 		OrgPackage: &QuotaBucket{Used: 1000, Total: 3000, Remaining: 2000},
 	})
-	if got := auth.Totals(&enterprise); got != (auth.QuotaTotals{Remaining: 2000, Total: 3000}) {
+	if got := auth.Totals(&enterprise); got != (auth.QuotaTotals{Remaining: 2000, Total: 3000, HasTotal: true}) {
 		t.Fatalf("企业账号页头 = %+v，want 2000/3000", got)
 	}
 	if len(enterprise.Groups) != 3 {
@@ -151,7 +151,45 @@ func TestBuildQuotaResponseHeadlineMatchesUsableBucket(t *testing.T) {
 		UserQuota:  &QuotaBucket{},
 		AddonQuota: &QuotaBucket{Used: 150, Total: 200, Remaining: 50},
 	})
-	if got := auth.Totals(&free); got != (auth.QuotaTotals{Remaining: 50, Total: 200}) {
+	if got := auth.Totals(&free); got != (auth.QuotaTotals{Remaining: 50, Total: 200, HasTotal: true}) {
 		t.Fatalf("Free 计划页头 = %+v，want 50/200", got)
+	}
+}
+
+// TestBuildQuotaResponseGroupsFollowSummaryOrder 锁「页头与额度条同序」。
+//
+// 页头数字取 Summary 里第一个有容量的族，额度条取 Groups 的顺序。两条路径若
+// 各排各的，就会渲染出「页头 2000/3000、第一条额度条却写着 0/3000」——用户看到
+// 的是自相矛盾的面板，而不是一个可以信任的数字。
+func TestBuildQuotaResponseGroupsFollowSummaryOrder(t *testing.T) {
+	response := BuildQuotaResponse(&Quota{
+		Plan:       "Enterprise",
+		UserQuota:  &QuotaBucket{Used: 3000, Total: 3000, Remaining: 0},
+		AddonQuota: &QuotaBucket{Used: 3000, Total: 3000, Remaining: 0},
+		OrgPackage: &QuotaBucket{Used: 1000, Total: 3000, Remaining: 2000},
+	})
+	if len(response.Groups) != 3 || len(response.Summary) < 3 {
+		t.Fatalf("分组 %d 条、Summary %d 条，不够比对", len(response.Groups), len(response.Summary))
+	}
+	// Summary 前三条的键前缀就是各族顺序：org_quota 打头。
+	wantOrder := []string{"org_quota", "user_quota", "addon_quota"}
+	for index, prefix := range wantOrder {
+		if key := response.Summary[index*3].Key; key != prefix+"_remaining" {
+			t.Fatalf("Summary 第 %d 族 = %s，want %s_remaining", index, key, prefix)
+		}
+	}
+	// Groups 的显示名必须与之一一对应，否则面板上下两块信息打架。
+	wantNames := []string{"组织资源包", "套餐额度", "个人拓展包"}
+	for index, name := range wantNames {
+		if got := response.Groups[index].DisplayName; got != name {
+			t.Fatalf("Groups[%d] = %s，want %s", index, got, name)
+		}
+	}
+	// 页头数字必须落在第一条额度条上。
+	if totals := auth.Totals(&response); totals.Remaining != 2000 || totals.Total != 3000 {
+		t.Fatalf("页头 = %+v，want 2000/3000", totals)
+	}
+	if fraction := response.Groups[0].Buckets[0].RemainingFraction; fraction < 0.66 || fraction > 0.67 {
+		t.Fatalf("首条额度条比例 = %v，want ≈0.667（2000/3000）", fraction)
 	}
 }

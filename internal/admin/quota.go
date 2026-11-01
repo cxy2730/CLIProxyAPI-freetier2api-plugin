@@ -48,6 +48,12 @@ type quotaResult struct {
 	Summary    string `json:"summary,omitempty"`
 	Remain     int64  `json:"remain"`
 	Total      int64  `json:"total"`
+	// HasTotal 报告上游是否真的报了总额。
+	//
+	// 多数渠道（AutoClaw、Raccoon、MiniMax 等）只给余额不给总额；此时 Total
+	// 是 0 而不是「总额为 0」，展示层必须据此显示「余额 / —」，不能把 0 当
+	// 分母拼成「10000 / 0」。
+	HasTotal bool `json:"has_total,omitempty"`
 	// Unlimited 报告剩余额度无上限，展示层据此显示「无限」。
 	Unlimited bool                    `json:"unlimited,omitempty"`
 	Metrics   []pluginapi.QuotaMetric `json:"metrics,omitempty"`
@@ -208,6 +214,7 @@ func (s *Service) runQuotaBatch(done chan struct{}, jobs []quotaJob) {
 		result.Summary = accountpkg.Summary(quota)
 		totals := accountpkg.Totals(quota)
 		result.Remain, result.Total, result.Unlimited = totals.Remaining, totals.Total, totals.Unlimited
+		result.HasTotal = totals.HasTotal
 		result.Metrics = quota.Summary
 		return outcome
 	})
@@ -241,6 +248,12 @@ func keepLastQuota(previous *quotaResult, errQuota error) (quotaResult, bool) {
 	if previous == nil || !previous.OK || errQuota == nil {
 		return quotaResult{}, false
 	}
+	// 确定类失败不能拿旧读数顶：硬额度耗尽、凭证失效、内容拦截这些不会自己
+	// 好转，保留上次的正常读数等于把「额度已经没了」显示成还有额度。只有
+	// 限流/超时/5xx 这类过一会儿就能恢复的失败才走「上次读数 + 非实时」。
+	if core.IsDefinitiveFailure(errQuota) {
+		return quotaResult{}, false
+	}
 	kept := *previous
 	kept.Stale = true
 	kept.StaleReason = errQuota.Error()
@@ -266,21 +279,15 @@ func (s *Service) queryQuota(ctx context.Context, job quotaJob) (*pluginapi.Quot
 	)
 }
 
+// refreshedCredential 在额度查询遇到 401 时保活刷新一次凭证。
+//
+// 与宿主额度路由（app.refreshedQuotaCredential）同源，实现见
+// accountpkg.RefreshCredential；刷新失败返回 nil，调用方保留原 401 如实上报。
 func (s *Service) refreshedCredential(ctx context.Context, callbackID string, entry core.HostAuth, vendor core.Vendor) *core.Credential {
-	authID := core.FirstNonEmpty(entry.ID, entry.Name)
-	if authID == "" {
+	if vendor == nil {
 		return nil
 	}
-	s.tasks.Keepalive(ctx, callbackID, []string{authID}, 1)
-
-	loaded, _ := s.pool.Load(ctx, callbackID, accountpkg.Options{
-		Targets:       []string{authID},
-		EnabledRealms: s.deps.Config().EnabledRealms,
-	})
-	for _, account := range loaded {
-		if account.Vendor.ID() == vendor.ID() {
-			return account.Credential
-		}
-	}
-	return nil
+	authID := core.FirstNonEmpty(entry.ID, entry.Name)
+	return accountpkg.RefreshCredential(ctx, s.pool, callbackID, authID, vendor.ID(), s.deps.Config().EnabledRealms,
+		func() { s.tasks.Keepalive(ctx, callbackID, []string{authID}, 1) })
 }

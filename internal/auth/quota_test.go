@@ -24,7 +24,7 @@ func TestTotalsRecognizesEveryVendorKeyFamily(t *testing.T) {
 				{Key: "total", Value: 100},
 				{Key: "used", Value: 20},
 			},
-			want: QuotaTotals{Remaining: 80, Total: 100},
+			want: QuotaTotals{Remaining: 80, Total: 100, HasTotal: true},
 		},
 		{
 			name: "credit_* 族（WorkBuddy / Trae）",
@@ -33,7 +33,7 @@ func TestTotalsRecognizesEveryVendorKeyFamily(t *testing.T) {
 				{Key: "credit_total", Value: 4800},
 				{Key: "credit_used", Value: 5.19},
 			},
-			want: QuotaTotals{Remaining: 4794, Total: 4800},
+			want: QuotaTotals{Remaining: 4794, Total: 4800, HasTotal: true},
 		},
 		{
 			name: "quota_* 族（Qoder）",
@@ -43,15 +43,17 @@ func TestTotalsRecognizesEveryVendorKeyFamily(t *testing.T) {
 				{Key: "addon_quota_remaining", Value: 50},
 				{Key: "addon_quota_total", Value: 100},
 			},
-			want: QuotaTotals{Remaining: 900, Total: 1000},
+			want: QuotaTotals{Remaining: 900, Total: 1000, HasTotal: true},
 		},
 		{
-			name: "只有已用、没有总额时反推",
+			// 反推出来的总额是我们算的，不是上游口径；如实报 HasTotal=false，
+			// 让展示层显示「余额 / —」。
+			name: "只有已用、没有总额时不反推",
 			summary: []pluginapi.QuotaMetric{
 				{Key: "credit_remain", Value: 80},
 				{Key: "credit_used", Value: 20},
 			},
-			want: QuotaTotals{Remaining: 80, Total: 100},
+			want: QuotaTotals{Remaining: 80, Total: 0},
 		},
 		{
 			name: "合法零额度不被后续额度族覆盖",
@@ -61,7 +63,7 @@ func TestTotalsRecognizesEveryVendorKeyFamily(t *testing.T) {
 				{Key: "user_quota_total", Value: 100},
 				{Key: "addon_quota_total", Value: 200},
 			},
-			want: QuotaTotals{Remaining: 0, Total: 100},
+			want: QuotaTotals{Remaining: 0, Total: 100, HasTotal: true},
 		},
 		{
 			// Qoder Free 计划：套餐额度是合法的 {used:0,total:0,remaining:0}，
@@ -75,7 +77,7 @@ func TestTotalsRecognizesEveryVendorKeyFamily(t *testing.T) {
 				{Key: "addon_quota_total", Value: 200},
 				{Key: "addon_quota_used", Value: 150},
 			},
-			want: QuotaTotals{Remaining: 50, Total: 200},
+			want: QuotaTotals{Remaining: 50, Total: 200, HasTotal: true},
 		},
 		{
 			name: "所有族都是 0/0 时保留第一个族（额度已用尽 / 未开通）",
@@ -85,7 +87,7 @@ func TestTotalsRecognizesEveryVendorKeyFamily(t *testing.T) {
 				{Key: "addon_quota_remaining", Value: 0},
 				{Key: "addon_quota_total", Value: 0},
 			},
-			want: QuotaTotals{Remaining: 0, Total: 0},
+			want: QuotaTotals{Remaining: 0, Total: 0, HasTotal: true},
 		},
 		{
 			name: "只给了 total=0 时不从 used 反推（presence 决定，非数值）",
@@ -94,7 +96,7 @@ func TestTotalsRecognizesEveryVendorKeyFamily(t *testing.T) {
 				{Key: "credit_total", Value: 0},
 				{Key: "credit_used", Value: 20},
 			},
-			want: QuotaTotals{Remaining: 0, Total: 0},
+			want: QuotaTotals{Remaining: 0, Total: 0, HasTotal: true},
 		},
 		{
 			name: "无限额度（Trae 用 -1 / unlimited 表达）",

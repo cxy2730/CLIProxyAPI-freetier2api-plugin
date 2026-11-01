@@ -113,18 +113,12 @@ func (s *Service) checkinAt() string {
 	return strings.TrimSpace(s.deps.Config().AutoCheckinAt)
 }
 
-// mergeHour 把 hour 并入排程点（去重、保持升序），已有则原样返回。
+// mergeHour 把一个整点并进排程小时列表，复用 NormalizeHours 做去重与排序。
+//
+// 这里曾自己写一份去重+排序，和 NormalizeHours 的规则分头演进（前者不校验
+// 0-23 边界、后者校验），并出来一条 24 点的排程不会被任何人发现。
 func mergeHour(hours []int, hour int) []int {
-	merged := make([]int, 0, len(hours)+1)
-	merged = append(merged, hour)
-	for _, existing := range hours {
-		if existing == hour {
-			continue
-		}
-		merged = append(merged, existing)
-	}
-	sort.Ints(merged)
-	return merged
+	return NormalizeHours(append(hours, hour))
 }
 
 // parseClockHour 把 HH:MM 转成排程用的整点小时。

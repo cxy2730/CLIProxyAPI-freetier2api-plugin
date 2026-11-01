@@ -43,7 +43,15 @@ func FormatValue(value float64) string {
 // QuotaTotals 是「剩余 / 总额」的折算结果。
 type QuotaTotals struct {
 	Remaining int64
-	Total     int64
+	// Total 是上游报的总额；HasTotal 为 false 时它是 0，但语义是「上游没报」。
+	Total int64
+	// HasTotal 报告上游是否真的报了总额。
+	//
+	// 余额型供应商（AutoClaw / Raccoon / MiniMax 等）只回一个「剩余积分」，
+	// 没有总额键。这时不能反推 total = remaining + used：反推出来的数字既不是
+	// 上游口径，也会让「剩余 / 总额」两栏看起来像真的（用户拿它算百分比，算
+	// 出来的比例没有任何意义）。展示层据此显示「余额 / —」。
+	HasTotal bool
 	// Unlimited 报告剩余额度无上限（上游以 -1 / unit=unlimited 表达）。
 	// 无上限时 Remaining 没有意义，展示层应显示「无限」而不是数字。
 	Unlimited bool
@@ -109,16 +117,13 @@ func Totals(response *pluginapi.QuotaFetchResponse) QuotaTotals {
 			break
 		}
 	}
-	// 没有 total 键时反推：total = remaining + used。
+	// 没有 total 键就如实报「没报」，不反推。
 	//
-	// 显式给出了 total=0 的族不反推——那是「没有这份权益」，不是「没给数」。
-	// 但键根本不存在时必须反推，否则余额型供应商（只回一个「剩余积分」，
-	// 例如 AutoClaw / Raccoon / MiniMax）页头会显示成「24,199 / 0」，和
-	// 其它渠道的「剩余 / 总额」完全对不上。
-	if !chosen.hasTotal {
-		chosen.total = chosen.remaining + chosen.used
-	}
-	return QuotaTotals{Remaining: chosen.remaining, Total: chosen.total}
+	// 反推（total = remaining + used）能得到一个能看的数字，但它是我们算的，
+	// 不是上游的口径：余额型供应商的 used 往往是 0 或另一套计量，反推出来的
+	// 总额会让「剩余 / 总额」两栏看起来像真的，用户据此算百分比毫无意义。
+	// 展示层拿 HasTotal 决定显示「余额 / —」。
+	return QuotaTotals{Remaining: chosen.remaining, Total: chosen.total, HasTotal: chosen.hasTotal}
 }
 
 // quotaFamily 是同一族额度键（remaining / total / used）的汇总。

@@ -84,3 +84,34 @@ func IsAuthExpired(err error) bool {
 	}
 	return false
 }
+
+// IsDefinitiveFailure 判断错误是否表示「账号侧已有确定结论」。
+//
+// 判定用途是「这次没取到额度，还能不能拿上次的读数顶上」：
+//   - 瞬时类（限流、超时、5xx、繁忙、WAF 拦截）过一会儿再查就能恢复，
+//     展示层可以保留上次读数并明确标注非实时；
+//   - 确定类（硬额度耗尽、凭证失效、内容拦截、参数错误、账号异常）不会
+//     自己好转，必须如实报错——否则界面会把「额度已经没了」显示成上次的
+//     正常读数，用户照着旧数字去用，撞墙才发现。
+//
+// 非 Failure（网络层错误、上下文取消）一律按瞬时处理：调用方无从判断账号
+// 状态，保留上次读数并标注非实时是可接受的。
+func IsDefinitiveFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	var failure *Failure
+	if !errors.As(err, &failure) {
+		return false
+	}
+	switch failure.Kind {
+	case FailureKindHardCredit, FailureKindQuota,
+		FailureKindSessionDead, FailureKindCredential,
+		FailureKindContentBlocked, FailureKindChannelRejected,
+		FailureKindBadParams, FailureKindClient,
+		FailureKindAccountFault, FailureKindModelBlocked,
+		FailureKindNotFound, FailureKindPromptTooLong, FailureKindImageInvalid:
+		return true
+	}
+	return false
+}

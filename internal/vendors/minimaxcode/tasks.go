@@ -283,7 +283,6 @@ func extractTokenPlanHead(coreMap map[string]any) *tokenPlanHead {
 			Key:   "token_remaining",
 			Label: "Token Plan 剩余",
 			Value: remains,
-			Unit:  "tokens",
 		})
 	}
 	return info

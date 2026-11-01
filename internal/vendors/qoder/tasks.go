@@ -105,23 +105,56 @@ func extractOrgPackage(data map[string]any) *QuotaBucket {
 // quotaBucketFromObject 按已知别名把一个桶对象读成 QuotaBucket。
 // 总额与剩余必须**同时**存在，否则返回 nil——避免把别的对象误认成额度桶。
 func quotaBucketFromObject(object map[string]any) *QuotaBucket {
-	total, hasTotal := firstNumberField(object, "total", "cap", "capacity")
-	remaining, hasRemaining := firstNumberField(object, "remaining", "available", "left")
-	if !hasTotal || !hasRemaining {
+	numbers := readBucketNumbers(object)
+	if !numbers.hasTotal || !numbers.hasRemaining {
 		return nil
 	}
-	used, hasUsed := firstNumberField(object, "used")
-	if !hasUsed {
-		used = total - remaining
-	}
-	if used < 0 {
-		used = 0
-	}
-	bucket := &QuotaBucket{Used: used, Total: total, Remaining: remaining}
+	bucket := &QuotaBucket{Used: numbers.used, Total: numbers.total, Remaining: numbers.remaining}
 	if reset, okReset := object["resetTime"].(string); okReset {
 		bucket.ResetTime = reset
 	}
 	return bucket
+}
+
+// bucketNumbers 是桶内三个数值及其「是否存在」标记。
+type bucketNumbers struct {
+	total, remaining, used          float64
+	hasTotal, hasRemaining, hasUsed bool
+}
+
+// readBucketNumbers 按同一套别名取桶内数值。
+//
+// 资源包（结构发现，键名不固定）和固定键桶（userQuota / addOnQuota）走同一份
+// 别名表：两套各写一份时，上游把 total 改名成 cap，只会有一边认得出来，另一
+// 边静默变 0。缺 used 时按 total - remaining 反推，仅当两者都在。
+func readBucketNumbers(object map[string]any) bucketNumbers {
+	numbers := bucketNumbers{}
+	numbers.total, numbers.hasTotal = firstNumberField(object, "total", "cap", "capacity")
+	numbers.remaining, numbers.hasRemaining = firstNumberField(object, "remaining", "available", "left")
+	numbers.used, numbers.hasUsed = firstNumberField(object, "used")
+	if !numbers.hasUsed && numbers.hasTotal && numbers.hasRemaining {
+		numbers.used = numbers.total - numbers.remaining
+		if numbers.used < 0 {
+			numbers.used = 0
+		}
+	}
+	return numbers
+}
+
+// toFloat 把 JSON 里的数值字段读成 float64（兼容多种数字形态）。
+func toFloat(m map[string]any, key string) float64 {
+	switch value := m[key].(type) {
+	case float64:
+		return value
+	case int:
+		return float64(value)
+	case int64:
+		return float64(value)
+	case json.Number:
+		parsed, _ := value.Float64()
+		return parsed
+	}
+	return 0
 }
 
 // firstNumberField 按顺序取第一个存在且为数值的字段。
@@ -225,10 +258,13 @@ func extractQuotaBucket(data map[string]any, key string) *QuotaBucket {
 	if !okObj || len(obj) == 0 {
 		return nil
 	}
+	// 桶对象存在即视为上游承认这份额度，缺字段按 0 处理（不走 quotaBucketFromObject
+	// 的「两字段齐全才算」判据——那是给键名不固定的资源包做误认防护的）。
+	numbers := readBucketNumbers(obj)
 	bucket := &QuotaBucket{
-		Used:      toFloat(obj, "used"),
-		Total:     toFloat(obj, "total"),
-		Remaining: toFloat(obj, "remaining"),
+		Used:      numbers.used,
+		Total:     numbers.total,
+		Remaining: numbers.remaining,
 	}
 	if reset, okReset := obj["resetTime"].(string); okReset {
 		bucket.ResetTime = reset
@@ -252,27 +288,19 @@ func BuildQuotaResponse(quota *Quota) pluginapi.QuotaFetchResponse {
 	// 显示「暂无额度数据」，看不出「已经用完」。
 	anyData := quotaBucketHasData(quota.UserQuota) || quotaBucketHasData(quota.AddonQuota) || quotaBucketHasData(quota.OrgPackage)
 	keepEmpty := func(bucket *QuotaBucket) bool { return !anyData || quotaBucketHasData(bucket) }
-	if keepEmpty(quota.UserQuota) {
-		if group := quotaGroup("套餐额度", quota.UserQuota); group != nil {
-			response.Groups = append(response.Groups, *group)
-		}
-	}
-	if keepEmpty(quota.AddonQuota) {
-		if group := quotaGroup("个人拓展包", quota.AddonQuota); group != nil {
-			response.Groups = append(response.Groups, *group)
-		}
-	}
-	if keepEmpty(quota.OrgPackage) {
-		if group := quotaGroup("组织资源包", quota.OrgPackage); group != nil {
-			response.Groups = append(response.Groups, *group)
-		}
-	}
 	// 三桶按「谁还有余额」排序后输出：宿主的 auth.Totals 取**第一个有容量的
 	// 族**当页头数字（total>0 即算有容量），所以顺序就是语义。
 	// 排错的表现：企业账号的页头永远停在已过期那桶的「0 / 3000」。
+	//
+	// Groups（面板上的额度条）与 Summary 必须同序：页头数字取的是 Summary 里
+	// 第一个有容量的族，两条路径各排各的就会出现「页头 2000/3000、第一条
+	// 却写着 0/3000」这种自相矛盾的展示。
 	for _, family := range orderedQuotaFamilies(quota) {
 		if !keepEmpty(family.bucket) {
 			continue
+		}
+		if group := quotaGroup(family.group, family.bucket); group != nil {
+			response.Groups = append(response.Groups, *group)
 		}
 		// total 必须一并输出：页面的「剩余/总额 + 使用率」要它才能算比例。
 		// 上游对 Free 计划可能给 total=0（额度按剩余量计），此时仍输出 0——
@@ -315,10 +343,12 @@ func quotaExpiryUnixSeconds(raw int64) int64 {
 	return seconds
 }
 
-// quotaFamilyMetric 是一个额度桶在 Summary 里的键前缀与中文名。
+// quotaFamilyMetric 是一个额度桶在 Summary 里的键前缀、chip 上的名字与
+// Summary 里用的短名。
 type quotaFamilyMetric struct {
 	prefix string
 	label  string
+	group  string
 	bucket *QuotaBucket
 }
 
@@ -336,9 +366,9 @@ type quotaFamilyMetric struct {
 // 套餐 → 拓展包 → 组织资源包 的自然顺序（个人账号优先看套餐）。
 func orderedQuotaFamilies(quota *Quota) []quotaFamilyMetric {
 	all := []quotaFamilyMetric{
-		{prefix: "user_quota", label: "套餐", bucket: quota.UserQuota},
-		{prefix: "addon_quota", label: "个人拓展包", bucket: quota.AddonQuota},
-		{prefix: "org_quota", label: "组织资源包", bucket: quota.OrgPackage},
+		{prefix: "user_quota", label: "套餐", group: "套餐额度", bucket: quota.UserQuota},
+		{prefix: "addon_quota", label: "个人拓展包", group: "个人拓展包", bucket: quota.AddonQuota},
+		{prefix: "org_quota", label: "组织资源包", group: "组织资源包", bucket: quota.OrgPackage},
 	}
 	ordered := make([]quotaFamilyMetric, 0, len(all))
 	taken := make([]bool, len(all))
@@ -387,22 +417,6 @@ func quotaGroup(displayName string, bucket *QuotaBucket) *pluginapi.QuotaGroup {
 			Description:       description,
 		}},
 	}
-}
-
-// toFloat 把 JSON 里的数值字段读成 float64（兼容多种数字形态）。
-func toFloat(m map[string]any, key string) float64 {
-	switch value := m[key].(type) {
-	case float64:
-		return value
-	case int:
-		return float64(value)
-	case int64:
-		return float64(value)
-	case json.Number:
-		parsed, _ := value.Float64()
-		return parsed
-	}
-	return 0
 }
 
 // 签到状态取值。

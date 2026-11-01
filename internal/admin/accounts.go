@@ -46,6 +46,7 @@ func (s *Service) buildStatusPayload(req pluginapi.ManagementRequest) map[string
 		"accounts":          accounts,
 		"account_count":     len(accounts),
 		"model_counts":      modelCounts,
+		"checkin_today":     s.tasks.Today(),
 		"models_fetched_at": current.ModelsFetchedAt,
 		"restart_pending":   current.RestartPending,
 		"settings":          s.settingsView(),
@@ -130,8 +131,8 @@ func (s *Service) cacheQuotaResult(q quotaResult) {
 	s.quotaMu.Lock()
 	defer s.quotaMu.Unlock()
 	if s.quotaCache == nil {
-		// 惰性初始化：Service 由 New 构造时已建好，但零值 Service 直接调
-		// 这里会 panic 在 nil map 赋值上，防御一下不值得。
+		// 惰性初始化：Service 由 New 构造时已建好，但零值 Service 直接调这里
+		// 会 panic 在 nil map 赋值上。防御成本只是一次 nil 判断，值得。
 		s.quotaCache = map[string]quotaResult{}
 	}
 	s.quotaCache[key] = q

@@ -717,8 +717,8 @@ func noCreditQuota(info *accountInfo) *pluginapi.QuotaFetchResponse {
 		// 靠它们折算总额，键缺失会让整张卡变成「暂无额度数据」。Label 里保留
 		// 原因说明，用户才知道 0 是「没开通」而不是「查询坏了」。
 		Summary: []pluginapi.QuotaMetric{
-			{Key: "total", Label: "积分总额（上游未返回积分指标）", Value: 0},
 			{Key: "remaining", Label: "剩余积分", Value: 0},
+			{Key: "total", Label: "积分总额（上游未返回积分指标）", Value: 0},
 			{Key: "used", Label: "已用积分", Value: 0},
 		},
 	}

@@ -203,8 +203,10 @@ func (v *adapter) fetchQuota(ctx context.Context, cred *Credential) (*pluginapi.
 			// 说成「尚未领取」同样误导。
 			note = "套餐已领取，额度桶尚未生效"
 		}
-		if response.Claim != nil && response.Claim.Error == "" {
-			response.Claim.Error = note
+		// 这些是说明而不是失败：Claim.Error 只表示「取数失败」，页面据它把
+		// 按钮置成可点重试；说明放 Note，页面只当提示渲染。
+		if response.Claim != nil && response.Claim.Note == "" {
+			response.Claim.Note = note
 		}
 	}
 	return response, nil

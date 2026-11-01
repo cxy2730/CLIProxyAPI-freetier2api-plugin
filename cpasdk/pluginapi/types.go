@@ -1657,19 +1657,6 @@ type QuotaFetchResponse struct {
 	// 搭在额度响应里而不是单独端点：额度查询顺带就能拿到，页面刷新额度即刷新
 	// 领取状态，无需额外轮询。
 	Claim *ClaimStatus `json:"claim,omitempty"`
-
-	// Stale 标记这份读数不是本次从上游取到的，而是上一次成功取到的缓存。
-	//
-	// 上游限流（429）、超时、5xx 是常态而非异常。这类失败时保留上次读数并置
-	// true：面板不会因为一次抖动就把额度列清空，用户分得清「没额度了」和
-	// 「这次没取到」。消费方必须据此提示「非实时」，否则旧数字会被当成实时值。
-	Stale bool `json:"stale,omitempty"`
-
-	// StaleReason 是本次取数失败的原因（Stale 为 true 时才有）。
-	StaleReason string `json:"stale_reason,omitempty"`
-
-	// FetchedAt 是这份读数的实际获取时间（RFC3339），无论是否为缓存都填。
-	FetchedAt string `json:"fetched_at,omitempty"`
 }
 
 // ClaimStatus 是账号的活动套餐领取状态。
@@ -1680,6 +1667,12 @@ type ClaimStatus struct {
 	Claimable int `json:"claimable"`
 	// Error 是本次探测失败的原因（成功时为空）。
 	Error string `json:"error,omitempty"`
+	// Note 是给页面看的说明，不是失败原因。
+	//
+	// 例如「套餐已领取，额度 2026-11-02T00:00:00Z 生效」「套餐已过期，无可用
+	// 额度」。这类文案既不是错误，也不影响能否点击领取；塞进 Error 会让页面
+	// 把「已领取」的账号显示成「可以再领一次」。页面按说明渲染即可。
+	Note string `json:"note,omitempty"`
 }
 
 // UnmarshalJSON supports both camelCase and snake_case field names.

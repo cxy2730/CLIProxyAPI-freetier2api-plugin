@@ -62,7 +62,7 @@ func TestQuotaResponseTokenPlan(t *testing.T) {
 	head := &tokenPlanHead{
 		planName: "MiniMax Token Plan Go",
 		metrics: []pluginapi.QuotaMetric{
-			{Key: "token_remaining", Label: "Token Plan 剩余", Value: 14291681135, Unit: "tokens"},
+			{Key: "token_remaining", Label: "Token Plan 剩余", Value: 14291681135},
 		},
 	}
 	groups := []pluginapi.QuotaGroup{{DisplayName: "5 小时窗口"}}

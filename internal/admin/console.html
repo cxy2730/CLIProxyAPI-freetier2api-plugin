@@ -1167,6 +1167,9 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     var host = document.getElementById("accounts");
     host.textContent = "";
     var accounts = (status && status.accounts) || [];
+    // 待复核只在「provisional_date 就是今天」时成立。provisional_date 写进去
+    // 后不会自己清，直接判非空会让上周那次待复核一直挂着。
+    var checkinToday = (status && status.checkin_today) || "";
     // 勾选集合按**全部账号**对齐，而不是筛选后的视图：把账号筛掉只是不显示，
     // 不该静默取消勾选（否则「筛一批 → 全选 → 清空筛选 → 执行」会漏目标）。
     var present = {};
@@ -1246,12 +1249,14 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
         if (!supportsCheckin) {
           row.appendChild(el("td", "无签到活动", "muted"));
         } else {
+          var pendingToday = !checkin.last_date && !!checkin.provisional_date &&
+            (!checkinToday || checkin.provisional_date === checkinToday);
           var checkinCell = el("td", checkin.last_date
             ? (checkin.last_date + (checkin.streak ? " · 连续 " + checkin.streak + " 天" : ""))
-            : (checkin.provisional_date ? (checkin.provisional_date + " · 待复核") : "未签到"));
+            : (pendingToday ? (checkin.provisional_date + " · 待复核") : "未签到"));
           // 待复核：上游在北京时间 12 点前会对还没领到的账号回「已签到」，
           // 此时不能显示成「已签到」，否则用户以为今天领过了。
-          if (!checkin.last_date && checkin.provisional_date) {
+          if (pendingToday) {
             checkinCell.className = "warn";
             checkinCell.title = "上游称今日已签到，但北京时间 12 点前上游会误报，后续排程会再确认";
           }
@@ -1302,10 +1307,11 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
         row.appendChild(el("td", "无限"));
         row.appendChild(el("td", "—", "muted"));
       } else {
-        // total=0 不等于「额度用尽」：有的上游只报可用余额（AutoClaw 的积分
-        // 钱包只有 balance，没有总额/已用）。把 0 当总额会拼出「10000 / 0」
-        // 再配一条红色 0% 空槽，既错又误导；此时按「余额 / —」展示，比例留空。
-        var hasTotal = quota.total > 0;
+        // has_total 由后端按「上游是否真的报了总额」给出，前端不靠 total>0 反推：
+        // 有的上游只报可用余额（AutoClaw 的积分钱包只有 balance），把 0 当总额
+        // 会拼出「10000 / 0」再配一条红色 0% 空槽，既错又误导。此时按
+        // 「余额 / —」展示，比例留空。
+        var hasTotal = !!quota.has_total;
         var remainCell = el("td", quota.remain + " / " + (hasTotal ? quota.total : "—"));
         if (!hasTotal) {
           remainCell.title = "上游只提供可用余额，没有总额 / 已用概念";
@@ -1315,7 +1321,9 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
         // 「没额度了」和「这次没取到」。
         if (quota.stale) {
           remainCell.appendChild(el("span", " 非实时", "muted"));
-          remainCell.title = "本次刷新失败，显示上次读数：" + (quota.stale_reason || "原因未知");
+          remainCell.title = "本次刷新失败，显示上次读数" +
+            (quota.fetched_at ? "（取于 " + quota.fetched_at.slice(0, 19).replace("T", " ") + "）" : "") +
+            "：" + (quota.stale_reason || "原因未知");
         }
         row.appendChild(remainCell);
         var ratio = hasTotal ? (quota.remain / quota.total) : 0;
@@ -1529,13 +1537,17 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   function claimButtonSpec(account) {
     if (!account.supports_claim) return null;
     var claim = account.claim || {};
+    // error 只表示取数失败（上游挂了 / 鉴权失效），按钮要能点重试；
+    // note 是说明（如「额度 11-02 生效」），不改变按钮状态。
     if (claim.error) return { text: "套餐领取", disabled: false, title: claim.error };
     // 未检测过（初次加载）或有待领套餐
     if (!claim.checked_at || claim.claimable > 0) {
-      return { text: "套餐领取", disabled: false, title: claim.claimable ? (claim.claimable + " 个套餐可领") : "点击查询可领套餐" };
+      // 可领数量比说明更有用：说明只解释「为什么现在没有额度」，不该盖掉
+      // 「有 N 个套餐可领」这个可操作信息。
+      return { text: "套餐领取", disabled: false, title: claim.claimable ? (claim.claimable + " 个套餐可领") : (claim.note || "点击查询可领套餐") };
     }
     // 已全部领取
-    return { text: "已领取", disabled: true, title: "已领取当前全部套餐" };
+    return { text: "已领取", disabled: true, title: claim.note || "已领取当前全部套餐" };
   }
 
   // openClaimModal 打开领取弹窗并实时拉取可领套餐。

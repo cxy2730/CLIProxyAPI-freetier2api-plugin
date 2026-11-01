@@ -273,3 +273,10 @@ var checkinZone = time.FixedZone("UTC+8", 8*60*60)
 
 // todayString 返回签到日键（UTC+8）。
 func (s *Service) todayString() string { return s.deps.Now().In(checkinZone).Format("2006-01-02") }
+
+// Today 返回签到口径的「今天」（北京时间 YYYY-MM-DD）。
+//
+// 控制台判断「待复核」是否属于今天时用它：provisional_date 是历史值，写进去
+// 之后不会自己清掉，只有与今天相等才该显示成「待复核」，否则上周那次待复核
+// 会一直挂着，用户天天看到一个永远不会消失的黄色标记。
+func (s *Service) Today() string { return s.todayString() }

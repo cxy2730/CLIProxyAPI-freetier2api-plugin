@@ -33,17 +33,6 @@ type TaskRecord struct {
 	Energy      int64  `json:"energy,omitempty"`
 }
 
-// QuotaSnapshot 是某凭证上一次成功取到的额度读数。
-type QuotaSnapshot struct {
-	// Payload 是原样的额度响应 JSON（含 summary/groups/claim 等）。
-	//
-	// 存原样而不是解析成结构体：额度响应字段随供应商演进（新增分组、新增
-	// 领取状态），解析成固定结构会在升级后把旧快照读成空。
-	Payload json.RawMessage `json:"payload"`
-	// FetchedAt 是取到这份读数的时间（RFC3339）。
-	FetchedAt string `json:"fetched_at,omitempty"`
-}
-
 // CheckinRecord 是某账号的签到记录。
 type CheckinRecord struct {
 	LastDate string `json:"last_date,omitempty"`
@@ -149,16 +138,6 @@ type State struct {
 	// 拿它做键会让别名在重登后丢失，或串到另一个账号头上。FileID 只由凭证
 	// 文件名决定，token 刷新与重登都不动它（见 core.Credential.FileID）。
 	AccountAliases map[string]string `json:"account_aliases,omitempty"`
-
-	// QuotaCache 是各凭证上一次成功取到的额度读数，键为「供应商ID|凭证ID」。
-	//
-	// 上游限流（429）、超时、5xx 是常态而非异常：这类失败不该让面板额度列
-	// 直接变空，否则用户没法判断「是没额度了」还是「这次没取到」。保留上次
-	// 读数并在响应里标 Stale，用户看到的是「这个数，但不是刚取的」。
-	//
-	// 只在**成功**时写入；失败时读出。凭证被删除后对应的键由 PruneQuotaCache
-	// 清理，避免状态文件无限增长。
-	QuotaCache map[string]QuotaSnapshot `json:"quota_cache,omitempty"`
 
 	// RestartPending 标记「已有模型变更，但宿主的模型注册表尚未刷新」。
 	RestartPending bool `json:"restart_pending,omitempty"`

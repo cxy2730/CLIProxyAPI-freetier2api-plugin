@@ -22,7 +22,6 @@ import (
 	"freetier2api-plugin/internal/core"
 	"freetier2api-plugin/internal/hostbridge"
 	"freetier2api-plugin/internal/logger"
-	"freetier2api-plugin/internal/state"
 	"freetier2api-plugin/internal/tasks"
 )
 
@@ -408,8 +407,9 @@ func (a *App) handleQuotaFetch(request []byte) ([]byte, error) {
 	ctx := hostbridge.WithCallbackID(context.Background(), "")
 	// 宿主的额度路由**不发 StorageJSON**（只发 AuthIndex/AuthID + 属性），
 	// 因此这里必须能按 index 回源，否则会误报「凭证缺失」。
+	authID := core.FirstNonEmpty(rpc.AuthIndex, rpc.AuthID)
 	credential, vendor, errResolve := a.resolveVendorCredential(ctx, "", rpc.StorageJSON,
-		core.FirstNonEmpty(rpc.AuthIndex, rpc.AuthID), rpc.Attributes)
+		authID, rpc.Attributes)
 	if errResolve != nil {
 		return nil, errResolve
 	}
@@ -423,7 +423,6 @@ func (a *App) handleQuotaFetch(request []byte) ([]byte, error) {
 	// 此前这里直接单发一次 provider.Quota()，于是 MiniMax（access token 只有
 	// 1 小时有效期）在宿主面板上会周期性挂 401，而同一时刻控制台刷新却是好的——
 	// 同一批上游、同一批凭证，两条路径的重试策略不该分裂。
-	authID := core.FirstNonEmpty(rpc.AuthIndex, rpc.AuthID)
 	response, errQuota := core.QueryWithRetry(ctx,
 		func(credential *core.Credential) (*pluginapi.QuotaFetchResponse, error) {
 			return provider.Quota(ctx, credential)
@@ -434,102 +433,48 @@ func (a *App) handleQuotaFetch(request []byte) ([]byte, error) {
 		},
 	)
 	if errQuota != nil {
-		// 上游这次没取到：有上次读数就返回它并标 Stale，没有才报错。
+		// 宿主契约里没有「这是上次的读数」这种表达（QuotaFetchResponse 不带
+		// stale 字段），所以这里不能拿旧值充新值——那会让宿主面板把过期的
+		// 数字当成实时值展示。要保留上次读数得先在宿主契约里落地这个语义；
+		// 在那之前，如实报错比给一个看不出过期的数字更安全。
 		//
-		// 限流/超时/5xx 时把额度列清空，用户无法区分「没额度了」和「这次没
-		// 取到」；保留上次读数并显式标「非实时」，比给一个空白更有信息量。
-		if cached, okCache := a.cachedQuotaSnapshot(vendor.ID(), authID); okCache {
-			cached.Stale = true
-			cached.StaleReason = errQuota.Error()
-			return core.OKEnvelope(cached)
-		}
+		// 「失败保留上次读数」只在插件自己的控制台里做（admin 侧有 Stale
+		// 字段，见 internal/admin/quota.go）。
 		return nil, core.ToPluginError(errQuota)
-	}
-	if response != nil {
-		response.FetchedAt = time.Now().UTC().Format(time.RFC3339)
-		a.storeQuotaSnapshot(vendor.ID(), authID, response)
 	}
 	return core.OKEnvelope(response)
 }
 
-// quotaSnapshotKey 是额度缓存的键：供应商 + 凭证。
-//
-// 带上供应商是因为同一个 authID 在不同供应商下可能重名（凭证文件名即 ID，
-// 而各家命名习惯不同），只按 authID 做键会让两家互相覆盖。
-func quotaSnapshotKey(vendorID, authID string) string {
-	if vendorID == "" || authID == "" {
-		return ""
-	}
-	return vendorID + "|" + authID
-}
-
-// storeQuotaSnapshot 记下本次成功取到的额度读数。
-func (a *App) storeQuotaSnapshot(vendorID, authID string, response *pluginapi.QuotaFetchResponse) {
-	key := quotaSnapshotKey(vendorID, authID)
-	if key == "" || response == nil {
-		return
-	}
-	// 存进缓存的是「干净读数」：Stale 是本次请求的临时状态，带进快照会让
-	// 下次读出来直接显示成缓存值。
-	snapshot := *response
-	snapshot.Stale = false
-	snapshot.StaleReason = ""
-	payload, errMarshal := json.Marshal(&snapshot)
-	if errMarshal != nil {
-		return
-	}
-	stamp := snapshot.FetchedAt
-	a.MutateState(func(current *pluginState) {
-		if current.QuotaCache == nil {
-			current.QuotaCache = map[string]state.QuotaSnapshot{}
-		}
-		current.QuotaCache[key] = state.QuotaSnapshot{Payload: payload, FetchedAt: stamp}
-	})
-}
-
-// cachedQuotaSnapshot 取回某凭证上次成功取到的额度读数。
-func (a *App) cachedQuotaSnapshot(vendorID, authID string) (*pluginapi.QuotaFetchResponse, bool) {
-	key := quotaSnapshotKey(vendorID, authID)
-	if key == "" {
-		return nil, false
-	}
-	snapshot, okSnapshot := a.SnapshotState().QuotaCache[key]
-	if !okSnapshot || len(snapshot.Payload) == 0 {
-		return nil, false
-	}
-	var response pluginapi.QuotaFetchResponse
-	if errUnmarshal := json.Unmarshal(snapshot.Payload, &response); errUnmarshal != nil {
-		return nil, false
-	}
-	response.FetchedAt = snapshot.FetchedAt
-	return &response, true
-}
-
 // refreshedQuotaCredential 在额度查询遇到 401 时保活刷新一次凭证。
 //
-// 与控制台 admin.refreshedCredential 同源：先跑一次 Keepalive（供应商在这里
-// 完成 refresh token → access token 的交换并写回宿主存储），再从账号池重新
-// 加载取到新凭证。
+// 与控制台 admin.refreshedCredential 同源，实现见 auth.RefreshCredential。
 func (a *App) refreshedQuotaCredential(ctx context.Context, callbackID, authID string, vendor core.Vendor) *core.Credential {
-	if authID == "" || vendor == nil || a.tasks == nil || a.pool == nil {
-		// 依赖缺失时返回 nil，调用方保留原 401 错误：宁可如实报错，
-		// 也不要在 nil 上 panic 把整个额度查询打成 500。
+	if vendor == nil {
 		return nil
 	}
-	a.tasks.Keepalive(ctx, callbackID, []string{authID}, 1)
-	loaded, _ := a.pool.Load(ctx, callbackID, auth.Options{
-		Targets:       []string{authID},
-		EnabledRealms: a.Config().EnabledRealms,
-	})
-	for _, account := range loaded {
-		if account.Vendor.ID() != vendor.ID() {
-			continue
-		}
-		// 新凭证要覆盖缓存，否则后续请求还会命中刷新前的旧 token。
-		a.storeCredential(authID, account.Credential)
-		return account.Credential
+	credential := auth.RefreshCredential(ctx, a.pool, callbackID, authID, vendor.ID(), a.Config().EnabledRealms,
+		func() {
+			if a.tasks != nil {
+				a.tasks.Keepalive(ctx, callbackID, []string{authID}, 1)
+			}
+		})
+	if credential == nil {
+		return nil
 	}
-	return nil
+	a.adoptRefreshedCredential(authID, credential)
+	return credential
+}
+
+// adoptRefreshedCredential 把刷新后的凭证回写回源缓存。
+//
+// 不回写的代价：宿主额度路由拿新 token 重试这一次是好的，但下一次请求仍走
+// credentialForAuth → 30 秒缓存，于是同一个旧 token 再撞一次 401。
+// 单独抽出来是为了这条不变式能被直接测到，而不必搭一个真实凭证池。
+func (a *App) adoptRefreshedCredential(authID string, credential *core.Credential) {
+	if credential == nil || strings.TrimSpace(authID) == "" {
+		return
+	}
+	a.storeCredential(authID, credential)
 }
 
 // handleQuotaReset 执行一次签到以恢复额度。

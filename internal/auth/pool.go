@@ -150,3 +150,28 @@ func (p *Pool) CheckVendorLimit(ctx context.Context, callbackID string, vendor c
 	}
 	return nil
 }
+
+// RefreshCredential 保活刷新后从账号池重新取回该账号的凭证。
+//
+// 额度查询（app 侧）与控制台刷新（admin 侧）共用这一段：先跑 keepalive
+// （供应商在这里完成 refresh token → access token 的交换并写回宿主存储），
+// 再从账号池重新加载取到新凭证。两处各写一遍时，任一处忘了重新加载就会拿着
+// 旧凭证重试，401 原样再挂一次。
+//
+// 任一步拿不到就返回 nil，调用方保留原 401 错误如实上报——不要在 nil 上继续
+// 拼请求，也不要把「刷新失败」当成「额度为 0」。
+func RefreshCredential(ctx context.Context, pool *Pool, callbackID, authID, vendorID string, realms []string, keepalive func()) *core.Credential {
+	if pool == nil || authID == "" || vendorID == "" {
+		return nil
+	}
+	if keepalive != nil {
+		keepalive()
+	}
+	loaded, _ := pool.Load(ctx, callbackID, Options{Targets: []string{authID}, EnabledRealms: realms})
+	for _, account := range loaded {
+		if account.Vendor != nil && account.Vendor.ID() == vendorID {
+			return account.Credential
+		}
+	}
+	return nil
+}
