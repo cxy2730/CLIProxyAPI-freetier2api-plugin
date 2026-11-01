@@ -328,6 +328,100 @@ func (v *adapter) RunScheduled(ctx context.Context, cred *core.Credential, kind 
 	return SummarizeUG(results), nil
 }
 
+// AutoTaskCodeUG 是一键任务里「活动福利」那一行的任务码。
+const AutoTaskCodeUG = "(活动福利)"
+
+// RunTask 执行单条任务。trae 只有两类可自动执行的动作：签到与活动福利，
+// 其余任务码一律按「该供应商没有这条任务」返回，避免静默成功。
+func (v *adapter) RunTask(ctx context.Context, cred *core.Credential, code string) (core.TaskRunResult, error) {
+	switch strings.TrimSpace(code) {
+	case core.AutoTaskCodeCheckin:
+		row := core.CheckinAutoTask(ctx, v, cred)
+		if row == nil {
+			return core.TaskRunResult{Status: "skipped", Message: "该账号不支持签到"}, nil
+		}
+		return core.TaskRunResult{Status: row.Status, Message: row.Message}, nil
+	case AutoTaskCodeUG:
+		native, errNative := v.Native(cred)
+		if errNative != nil {
+			return core.TaskRunResult{}, errNative
+		}
+		ugResults, errClaim := ClaimUG(ctx, native, v.profile())
+		status, message := summarizeUGForAutoTask(ugResults)
+		if errClaim != nil {
+			return core.TaskRunResult{Status: status, Message: message}, errClaim
+		}
+		return core.TaskRunResult{Status: status, Message: message}, nil
+	default:
+		return core.TaskRunResult{Status: "skipped", Message: "该供应商没有这条任务"}, nil
+	}
+}
+
+// RunAllTasks 执行一键任务：先签到，再领取活动中心/裂变/比赛的活动奖励。
+//
+// trae 的活动福利全部挂在 UG 端点上（活动总览、邀请码裂变、比赛领取），
+// 与定时排程的 ug 族是同一套调用，这里只是把它接进一键任务，让用户不用
+// 等排程也能立刻把能领的领掉。领取本身幂等：已领过的返回「此前已领取」。
+func (v *adapter) RunAllTasks(ctx context.Context, cred *core.Credential) []core.AutoTaskResult {
+	results := make([]core.AutoTaskResult, 0, 2)
+	if row := core.CheckinAutoTask(ctx, v, cred); row != nil {
+		results = append(results, *row)
+	}
+	native, errNative := v.Native(cred)
+	if errNative != nil {
+		return append(results, core.AutoTaskResult{
+			Code:    AutoTaskCodeUG,
+			Status:  "error",
+			Message: core.ToPluginError(errNative).Error(),
+		})
+	}
+	ugResults, errClaim := ClaimUG(ctx, native, v.profile())
+	status, message := summarizeUGForAutoTask(ugResults)
+	if errClaim != nil {
+		if len(ugResults) == 0 {
+			return append(results, core.AutoTaskResult{
+				Code:    AutoTaskCodeUG,
+				Status:  "error",
+				Message: core.ToPluginError(errClaim).Error(),
+			})
+		}
+		// 部分成功：已拿到的战果照常展示，只把错误附在后面。
+		message = message + "；" + core.ToPluginError(errClaim).Error()
+	}
+	return append(results, core.AutoTaskResult{
+		Code:    AutoTaskCodeUG,
+		Status:  status,
+		Message: message,
+	})
+}
+
+// summarizeUGForAutoTask 把逐条 UG 结果压成一行：领取数量决定状态，
+// 明细交给 SummarizeUG（它已经处理了「有信息量的不可领项」的取舍）。
+func summarizeUGForAutoTask(results []UGResult) (string, string) {
+	if len(results) == 0 {
+		return "skipped", "没有可领取的活动入口"
+	}
+	var claimed, already, failed int
+	for _, result := range results {
+		switch result.Status {
+		case UGClaimed:
+			claimed++
+		case UGAlready:
+			already++
+		case UGFailed:
+			failed++
+		}
+	}
+	switch {
+	case claimed > 0:
+		return "done", SummarizeUG(results)
+	case failed > 0 && already == 0:
+		return "error", SummarizeUG(results)
+	default:
+		return "skipped", SummarizeUG(results)
+	}
+}
+
 // 编译期断言：适配器实际具备的供应商能力。
 var (
 	_ core.Vendor              = (*adapter)(nil)
@@ -340,4 +434,5 @@ var (
 	_ core.CreditsProvider     = (*adapter)(nil)
 	_ core.TaskCatalogProvider = (*adapter)(nil)
 	_ core.ScheduledRunner     = (*adapter)(nil)
+	_ core.TaskRunner          = (*adapter)(nil)
 )

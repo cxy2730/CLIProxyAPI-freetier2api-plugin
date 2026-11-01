@@ -2,6 +2,7 @@ package zcode
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"time"
 
@@ -256,6 +257,60 @@ func (v *adapter) ConfigFields() []pluginapi.ConfigField {
 	return fields
 }
 
+// AutoTaskCodeActivity 是一键任务里「活动资格」那一行的任务码。
+const AutoTaskCodeActivity = "(活动资格)"
+
+// RunAllTasks 执行一键任务。
+//
+// ZCode 的活动套餐领取必须带人机验证（core.PlanClaimRequest.VerifyParam 由
+// 控制台的验证码组件产出），代理侧没有可替代的求解手段，所以这里只做能自动
+// 完成的那一半：上报活动资格事件，并回报当前有几个活动可领。
+//
+// 资格事件是硬前提——缺了 app_launch / app_daily_active，上游 billing/preview
+// 恒返回空投放，活动中心会一直显示「已领取」。
+func (v *adapter) RunAllTasks(ctx context.Context, cred *core.Credential) []core.AutoTaskResult {
+	results := make([]core.AutoTaskResult, 0, 1)
+	probe, errProbe := v.ProbeActivity(ctx, cred)
+	if errProbe != nil {
+		return append(results, core.AutoTaskResult{
+			Code:    AutoTaskCodeActivity,
+			Status:  "error",
+			Message: core.ToPluginError(errProbe).Error(),
+		})
+	}
+	claimable, errClaimable := v.PreviewPlans(ctx, cred)
+	message := "已上报活动资格事件"
+	if probe.Warning != "" {
+		message += "（" + probe.Warning + "）"
+	}
+	switch {
+	case errClaimable != nil:
+		message += "；查询可领活动失败：" + core.ToPluginError(errClaimable).Error()
+	case len(claimable) > 0:
+		message += "；当前 " + strconv.Itoa(len(claimable)) + " 个活动可领，领取需在控制台输入验证码"
+	default:
+		message += "；当前没有可领的活动"
+	}
+	return append(results, core.AutoTaskResult{
+		Code:    AutoTaskCodeActivity,
+		Status:  "done",
+		Message: message,
+	})
+}
+
+// RunTask 执行单条任务。ZCode 可自动执行的动作只有活动资格上报。
+func (v *adapter) RunTask(ctx context.Context, cred *core.Credential, code string) (core.TaskRunResult, error) {
+	if strings.TrimSpace(code) != AutoTaskCodeActivity {
+		return core.TaskRunResult{Status: "skipped", Message: "该供应商没有这条任务"}, nil
+	}
+	rows := v.RunAllTasks(ctx, cred)
+	if len(rows) == 0 {
+		return core.TaskRunResult{Status: "skipped", Message: "没有可执行的活动动作"}, nil
+	}
+	row := rows[0]
+	return core.TaskRunResult{Status: row.Status, Message: row.Message}, nil
+}
+
 // 编译期断言：适配器实际具备的供应商能力。
 var (
 	_ core.Vendor               = (*adapter)(nil)
@@ -268,4 +323,5 @@ var (
 	_ core.ActivityProbe        = (*adapter)(nil)
 	_ core.PlanClaimer          = (*adapter)(nil)
 	_ core.LegacyIDReporter     = (*adapter)(nil)
+	_ core.TaskRunner           = (*adapter)(nil)
 )

@@ -335,6 +335,28 @@ func (v *adapter) probeToken() string {
 	return native.AccessTokenValue()
 }
 
+// RunAllTasks 执行一键任务。autoclaw 的活动福利只有签到这一条链路
+// （每日签到 + 登录活跃上报都在 Checkin 里），因此一键任务只产出签到那一行。
+func (v *adapter) RunAllTasks(ctx context.Context, cred *core.Credential) []core.AutoTaskResult {
+	results := make([]core.AutoTaskResult, 0, 1)
+	if row := core.CheckinAutoTask(ctx, v, cred); row != nil {
+		results = append(results, *row)
+	}
+	return results
+}
+
+// RunTask 执行单条任务。
+func (v *adapter) RunTask(ctx context.Context, cred *core.Credential, code string) (core.TaskRunResult, error) {
+	if strings.TrimSpace(code) != core.AutoTaskCodeCheckin {
+		return core.TaskRunResult{Status: "skipped", Message: "该供应商没有这条任务"}, nil
+	}
+	row := core.CheckinAutoTask(ctx, v, cred)
+	if row == nil {
+		return core.TaskRunResult{Status: "skipped", Message: "该账号不支持签到"}, nil
+	}
+	return core.TaskRunResult{Status: row.Status, Message: row.Message, Credit: row.Credit, Energy: row.Energy}, nil
+}
+
 // 编译期断言：适配器实际具备的供应商能力。
 var (
 	_ core.Vendor               = (*adapter)(nil)
@@ -346,6 +368,7 @@ var (
 	_ core.Refresher            = (*adapter)(nil)
 	_ core.StorageMerger        = (*adapter)(nil)
 	_ core.CreditsProvider      = (*adapter)(nil)
+	_ core.TaskRunner           = (*adapter)(nil)
 )
 
 // 编译期断言（登录能力随实例类型分派）。

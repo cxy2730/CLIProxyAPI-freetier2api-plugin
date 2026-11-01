@@ -413,6 +413,41 @@ func (v *adapter) probeToken() string {
 	return native.AccessTokenValue()
 }
 
+// AutoTaskCodeLoginGrant 是一键任务里「登录奖励」那一行的任务码。
+const AutoTaskCodeLoginGrant = "(登录奖励)"
+
+// RunAllTasks 执行一键任务。
+//
+// 小浣熊没有每日签到，客户端唯一能领的是官方桌面端登录弹窗的一次性积分，
+// 而且每号只能领一次。这里把它放进一键任务（幂等），已领过的按「已完成」
+// 上报，不产生失败历史。
+func (v *adapter) RunAllTasks(ctx context.Context, cred *core.Credential) []core.AutoTaskResult {
+	res, errCheckin := v.Checkin(ctx, cred)
+	if errCheckin != nil {
+		return []core.AutoTaskResult{{Code: AutoTaskCodeLoginGrant, Status: "error", Message: core.ToPluginError(errCheckin).Error()}}
+	}
+	if res == nil {
+		return nil
+	}
+	status := "done"
+	if res.Already {
+		status = "skipped"
+	}
+	return []core.AutoTaskResult{{Code: AutoTaskCodeLoginGrant, Status: status, Message: res.Message, Credit: res.Credit}}
+}
+
+// RunTask 执行单条任务。小浣熊只有一条一次性登录奖励。
+func (v *adapter) RunTask(ctx context.Context, cred *core.Credential, code string) (core.TaskRunResult, error) {
+	if strings.TrimSpace(code) != AutoTaskCodeLoginGrant {
+		return core.TaskRunResult{Status: "skipped", Message: "该供应商没有这条任务"}, nil
+	}
+	rows := v.RunAllTasks(ctx, cred)
+	if len(rows) == 0 {
+		return core.TaskRunResult{Status: "skipped", Message: "没有可执行的动作"}, nil
+	}
+	return core.TaskRunResult{Status: rows[0].Status, Message: rows[0].Message, Credit: rows[0].Credit}, nil
+}
+
 // 编译期断言：适配器实际具备的供应商能力。
 var (
 	_ core.Vendor               = (*adapter)(nil)
@@ -427,4 +462,5 @@ var (
 	_ core.QuotaProvider        = (*adapter)(nil)
 	_ core.Refresher            = (*adapter)(nil)
 	_ core.StorageMerger        = (*adapter)(nil)
+	_ core.TaskRunner           = (*adapter)(nil)
 )
