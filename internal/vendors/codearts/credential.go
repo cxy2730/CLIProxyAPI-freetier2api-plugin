@@ -3,6 +3,8 @@ package codearts
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
+	"time"
 
 	"freetier2api-plugin/internal/core"
 )
@@ -54,6 +56,9 @@ func ParseCredential(raw []byte) (*Credential, error) {
 		Expiration:      core.GetString(m, "expiration"),
 		ExpiresAt:       core.GetInt64(m, "expires_at", "expiresAt"),
 		Label:           core.GetString(m, "label"),
+	}
+	if c.ExpiresAt == 0 && c.Expiration != "" {
+		c.ExpiresAt = parseExpiration(c.Expiration)
 	}
 
 	if jwkObj := core.GetMap(m, "dpop_private_key"); jwkObj != nil {
@@ -116,4 +121,35 @@ func (c *Credential) StorageJSON() ([]byte, error) {
 		m["label"] = c.Label
 	}
 	return json.MarshalIndent(m, "", "  ")
+}
+
+// Valid 检查凭据是否在指定的提前量内仍有效。
+func (c *Credential) Valid(margin time.Duration) bool {
+	if c == nil || c.AccessKeyID == "" || c.SecretAccessKey == "" {
+		return false
+	}
+	if c.ExpiresAt <= 0 {
+		return true
+	}
+	return time.Now().Add(margin).Unix() < c.ExpiresAt
+}
+
+// parseExpiration 解析华为云 STS 返回的 expiration 时间字符串为 Unix 秒。
+func parseExpiration(s string) int64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05.000Z",
+		"2006-01-02T15:04:05Z",
+		"2006-01-02 15:04:05",
+	} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.Unix()
+		}
+	}
+	return 0
 }

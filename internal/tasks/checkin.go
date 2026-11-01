@@ -94,6 +94,14 @@ func (s *Service) Checkin(ctx context.Context, vendor core.Vendor, credential *c
 	}
 
 	result, errCheckin := provider.Checkin(ctx, credential)
+	if errCheckin != nil && core.IsAuthExpired(errCheckin) {
+		if account := s.findAccount(ctx, "", uid); account != nil {
+			if refreshed, errRefresh := s.RefreshAccount(ctx, "", account); errRefresh == nil && refreshed {
+				credential = account.credential
+				result, errCheckin = provider.Checkin(ctx, credential)
+			}
+		}
+	}
 	if errCheckin != nil {
 		s.recordCheckinFailure(vendor, credential, trigger, errCheckin.Error())
 		return nil, errCheckin

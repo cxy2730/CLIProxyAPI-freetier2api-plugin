@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"freetier2api-plugin/cpasdk/pluginapi"
 	"freetier2api-plugin/internal/auth"
 	"freetier2api-plugin/internal/core"
+	"freetier2api-plugin/internal/hostbridge"
 	"freetier2api-plugin/internal/state"
 )
 
@@ -21,17 +23,19 @@ import (
 
 // fakeDeps 是只实现落库所需能力的最小 Deps。
 type fakeDeps struct {
-	now   time.Time
-	state state.State
-	cfg   Config
+	pool     *auth.Pool
+	registry *core.Registry
+	now      time.Time
+	state    state.State
+	cfg      Config
 	// mutations 统计落盘次数：一次签到只应产生一次状态变更。
 	mutations int
 	// refreshSaves 统计凭证写回次数：并发续期只应写回一次。
 	refreshSaves int
 }
 
-func (f *fakeDeps) Registry() *core.Registry { return nil }
-func (f *fakeDeps) Pool() *auth.Pool         { return nil }
+func (f *fakeDeps) Registry() *core.Registry { return f.registry }
+func (f *fakeDeps) Pool() *auth.Pool         { return f.pool }
 func (f *fakeDeps) Config() Config           { return f.cfg }
 func (f *fakeDeps) State() state.State       { return f.state }
 func (f *fakeDeps) Now() time.Time           { return f.now }
@@ -305,5 +309,94 @@ func TestRecordCheckinResultPersistsStreak(t *testing.T) {
 	})
 	if got := deps.state.Checkin[credential.FileIDValue()].Streak; got != 8 {
 		t.Errorf("连签天数 = %d, 期望 8", got)
+	}
+}
+
+// refreshableCheckinVendor 支持 Checkin 与 Refresh 的测试 Vendor。
+type refreshableCheckinVendor struct {
+	fakeCheckinVendor
+	checkinCount int
+	refreshed    bool
+}
+
+func (v *refreshableCheckinVendor) Checkin(ctx context.Context, cred *core.Credential) (*core.CheckinResult, error) {
+	v.checkinCount++
+	if cred.TokenValue() == "expired-token" {
+		return nil, &core.Failure{
+			Kind:   core.FailureKindCredential,
+			Status: 401,
+			Code:   "APIG.0602",
+			Msg:    "Bad request: the security token has expired",
+		}
+	}
+	return &core.CheckinResult{Credit: 1000, Message: "签到成功 +1000 积分"}, nil
+}
+
+func (v *refreshableCheckinVendor) Refresh(ctx context.Context, cred *core.Credential) (*core.Credential, bool, error) {
+	v.refreshed = true
+	cred.ApplyTokenRefresh("fresh-token", "new-rt", time.Now().Add(12*time.Hour).Unix())
+	return cred, true, nil
+}
+
+// TestCheckinAutoRefreshesOn401 验证：当 Checkin 遇到 401 凭证过期时，
+// 任务服务会自动通过 RefreshAccount 刷新凭据并落盘写回，重试完成签到。
+func TestCheckinAutoRefreshesOn401(t *testing.T) {
+	vendor := &refreshableCheckinVendor{fakeCheckinVendor: fakeCheckinVendor{id: "testvendor"}}
+	reg := core.NewRegistry()
+	reg.Register(vendor)
+
+	cred := &core.Credential{
+		VendorID: "testvendor",
+		FileID:   "user1",
+		Token:    "expired-token",
+		UID:      "user1",
+	}
+
+	pool := auth.NewPool(reg, func(ctx context.Context, callbackID string, storageJSON []byte, authID string, attrs map[string]string) (*core.Credential, core.Vendor, error) {
+		return cred, vendor, nil
+	})
+
+	// mock hostbridge 列表
+	hostbridge.Configure(func(_ string, method string, payload any) (json.RawMessage, error) {
+		switch method {
+		case "host.auth.list":
+			return json.Marshal([]map[string]any{
+				{"id": "user1", "name": "user1.json", "auth_index": "user1.json", "provider": "freetier"},
+			})
+		case "host.auth.get":
+			return json.Marshal(map[string]any{
+				"auth_index": "user1.json",
+				"name": "user1.json",
+				"json": []byte(`{"token":"expired-token"}`),
+			})
+		}
+		return nil, fmt.Errorf("unexpected method: %s", method)
+	})
+	t.Cleanup(func() { hostbridge.Configure(nil) })
+
+	deps := newFakeDeps(time.Date(2026, 10, 25, 10, 0, 0, 0, time.UTC))
+	deps.pool = pool
+	deps.registry = reg
+	service := New(deps)
+
+
+	result, err := service.Checkin(context.Background(), vendor, cred, CheckinTriggerSchedule)
+	if err != nil {
+		t.Fatalf("Checkin failed: %v", err)
+	}
+	if result == nil || result.Credit != 1000 {
+		t.Fatalf("unexpected checkin result: %+v", result)
+	}
+	if vendor.checkinCount != 2 {
+		t.Errorf("checkinCount = %d, want 2 (initial 401 + retry)", vendor.checkinCount)
+	}
+	if !vendor.refreshed {
+		t.Error("expected vendor to be refreshed")
+	}
+	if cred.TokenValue() != "fresh-token" {
+		t.Errorf("expected token to be updated, got %q", cred.TokenValue())
+	}
+	if deps.refreshSaves != 1 {
+		t.Errorf("refreshSaves = %d, want 1", deps.refreshSaves)
 	}
 }

@@ -347,3 +347,91 @@ func stubBenefitClaims(t *testing.T, claims *atomic.Int32, firstFails bool) {
 	})
 	t.Cleanup(func() { hostbridge.Configure(nil) })
 }
+
+// TestCheckinAuthExpiredDoesNotFallbackToBenefit 验证当账户查询报 401 凭证过期时，
+// 绝不能错误地 fallback 调福利接口（那会导致解密失败 APIG.0301 并覆盖真实错误），
+// 必须直接返回 401 凭证错误，以供上层刷新重试。
+func TestCheckinAuthExpiredDoesNotFallbackToBenefit(t *testing.T) {
+	calls := map[string]int{}
+	hostbridge.Configure(func(_ string, method string, payload any) (json.RawMessage, error) {
+		raw, _ := json.Marshal(payload)
+		var req struct {
+			URL string `json:"url"`
+		}
+		_ = json.Unmarshal(raw, &req)
+		calls[req.URL]++
+		if req.URL == SnapEngineApiHost+EpPackageInfo {
+			return json.Marshal(map[string]any{
+				"StatusCode": 401,
+				"Body":       []byte(`{"error_code":"APIG.0602","error_msg":"Bad request: the security token has expired"}`),
+			})
+		}
+		return nil, fmt.Errorf("unexpected URL: %s", req.URL)
+	})
+	t.Cleanup(func() { hostbridge.Configure(nil) })
+
+	cred := &Credential{AccessKeyID: "expired-ak", SecretAccessKey: "expired-sk", SecurityToken: "expired-sts"}
+	result, err := checkin(context.Background(), cred, &benefitCheckinState{})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if result != nil {
+		t.Fatalf("expected nil result, got %+v", result)
+	}
+	if !core.IsAuthExpired(err) {
+		t.Fatalf("expected IsAuthExpired to be true, got error: %v", err)
+	}
+	if strings.Contains(err.Error(), "福利 Token 领取失败") {
+		t.Fatalf("auth expired error should not trigger benefit fallback: %v", err)
+	}
+	if calls[BenefitHost+EpBenefitClaim] > 0 || calls[SnapEngineApiHost+EpBenefitGateway] > 0 {
+		t.Fatalf("must not call benefit endpoints when auth is expired")
+	}
+}
+
+// TestParseExpirationAndValid 验证 Expiration 时间解析与 Valid 方法
+func TestParseExpirationAndValid(t *testing.T) {
+	cred, err := ParseCredential([]byte(`{
+		"access_key_id": "ak",
+		"secret_access_key": "sk",
+		"expiration": "2026-11-01T15:00:00.000Z"
+	}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	wantExp, _ := time.Parse(time.RFC3339, "2026-11-01T15:00:00.000Z")
+	if cred.ExpiresAt != wantExp.Unix() {
+		t.Fatalf("ExpiresAt = %d, want %d", cred.ExpiresAt, wantExp.Unix())
+	}
+	futureCred := &Credential{
+		AccessKeyID:     "ak",
+		SecretAccessKey: "sk",
+		ExpiresAt:       time.Now().Add(10 * time.Minute).Unix(),
+	}
+	if !futureCred.Valid(5 * time.Minute) {
+		t.Fatal("10 分钟后到期的凭据在 5 分钟提前量下应为 Valid")
+	}
+	if futureCred.Valid(15 * time.Minute) {
+		t.Fatal("10 分钟后到期的凭据在 15 分钟提前量下不应为 Valid")
+	}
+}
+
+// TestBuildDPoPProofDerivesPublicFromPrivate 验证 DPoP 仅有私钥时自动派生公钥
+func TestBuildDPoPProofDerivesPublicFromPrivate(t *testing.T) {
+	jwk, err := generateDPoPJWK()
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(jwk, "x")
+	delete(jwk, "y")
+	proof, err := buildDPoPProof(jwk, "https://example.com/tokens")
+	if err != nil {
+		t.Fatalf("buildDPoPProof with missing x/y failed: %v", err)
+	}
+	if !strings.HasPrefix(proof, "eyJ") {
+		t.Fatalf("proof does not look like JWT: %s", proof)
+	}
+	if jwk["x"] == "" || jwk["y"] == "" {
+		t.Fatalf("expected x and y to be derived into jwk")
+	}
+}

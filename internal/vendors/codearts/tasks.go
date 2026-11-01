@@ -95,6 +95,11 @@ func checkin(ctx context.Context, cred *Credential, benefitState *benefitCheckin
 
 	info, errInfo := fetchAccountInfo(ctx, cred)
 	if errInfo != nil {
+		// 凭证过期等 401 错误不得 fallback 到福利接口：凭证失效时打任何接口都会报签名或解密错误，
+		// 必须原样返回以保留 401 错误链供保活机制刷新凭据。
+		if core.IsAuthExpired(errInfo) {
+			return nil, errInfo
+		}
 		// 账户信息查不到时不能直接判失败：Token 计费账户本来就不在积分活动
 		// 范围，仍可能走福利 Token 通道。兜底也失败时保留两条链路的原因。
 		result, errFallback := claimBenefitTokenFallback(ctx, cred, false, benefitState)
@@ -245,7 +250,11 @@ type opsClaimResult struct {
 
 // claimOps 调用 /v1/ops/claim，body 与官方客户端逐字节一致。
 func claimOps(ctx context.Context, cred *Credential, campaignID string) (*opsClaimResult, error) {
-	body := []byte(`{"campaignId":"` + jsonEscape(campaignID) + `","channel":"` + OpsChannel + `"}`)
+	body, _ := json.Marshal(map[string]any{
+		"campaignId":    campaignID,
+		"idempotentKey": core.RandomHex(16),
+		"channel":       OpsChannel,
+	})
 	data, errClaim := signedSnapJSON(ctx, http.MethodPost, SnapEngineApiHost+EpOpsClaim, cred, body)
 	if errClaim != nil {
 		return nil, errClaim
@@ -784,8 +793,9 @@ func fetchBenefitBalance(ctx context.Context, cred *Credential) (*benefitBalance
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return nil, fmt.Errorf("decode benefit balance: %w", err)
 	}
-	// 0000 是成功码；4004 是「没有福利记录」，两者都不是错误退出。
-	if envelope.ErrorCode == "4004" || strings.Contains(envelope.ErrorMsg, "benefit not found") {
+	// 0000 是成功码；4004 是「没有福利记录」，4000 是「通道已关闭」，三者都不是错误退出。
+	if envelope.ErrorCode == "4004" || strings.Contains(envelope.ErrorMsg, "benefit not found") ||
+		envelope.ErrorCode == "4000" || strings.Contains(envelope.ErrorMsg, "invalid channel") {
 		return nil, nil
 	}
 	if envelope.ErrorCode != "" && envelope.ErrorCode != "0000" {

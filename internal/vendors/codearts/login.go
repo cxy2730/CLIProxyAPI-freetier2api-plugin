@@ -148,6 +148,10 @@ func pollLoginTicket(ctx context.Context, logins core.LoginSessions, sessionID s
 // successResponse 把票据/令牌返回的凭证转成宿主认识的登录成功响应。
 func successResponse(creds *ticketCredentials, pending *pendingLogin) *pluginapi.AuthLoginPollResponse {
 	uid := core.FirstNonEmpty(creds.UserID, creds.UserName, "codearts-user")
+	expiresAt := parseExpiration(creds.Expiration)
+	if expiresAt == 0 {
+		expiresAt = time.Now().Add(12 * time.Hour).Unix()
+	}
 	cred := &Credential{
 		Vendor:          VendorID,
 		UserID:          creds.UserID,
@@ -160,6 +164,8 @@ func successResponse(creds *ticketCredentials, pending *pendingLogin) *pluginapi
 		CodeVerifier:    pending.Verifier,
 		ClientID:        ClientID,
 		DPoPPrivateKey:  pending.DPoPPrivateKey,
+		Expiration:      creds.Expiration,
+		ExpiresAt:       expiresAt,
 		Label:           "CodeArts-" + uid,
 	}
 	storageJSON, errStorage := cred.StorageJSON()
@@ -535,6 +541,12 @@ func RefreshCredential(ctx context.Context, cred *Credential) (*Credential, bool
 	}
 	if creds.Expiration != "" {
 		updated.Expiration = creds.Expiration
+		if exp := parseExpiration(creds.Expiration); exp > 0 {
+			updated.ExpiresAt = exp
+		}
+	}
+	if updated.ExpiresAt == 0 {
+		updated.ExpiresAt = time.Now().Add(12 * time.Hour).Unix()
 	}
 	return &updated, true, nil
 }
@@ -554,29 +566,61 @@ func MergeStorageJSON(original []byte, updated *Credential) ([]byte, error) {
 		if updated.Expiration != "" {
 			m["expiration"] = updated.Expiration
 		}
+		if updated.ExpiresAt > 0 {
+			m["expires_at"] = updated.ExpiresAt
+		}
 	})
 }
 
 func buildDPoPProof(jwk map[string]string, htu string) (string, error) {
-	if jwk == nil || jwk["d"] == "" || jwk["x"] == "" || jwk["y"] == "" {
+	if jwk == nil || jwk["d"] == "" {
 		return "", fmt.Errorf("missing dpop private key material")
 	}
 
-	xRaw, errX := base64.RawURLEncoding.DecodeString(jwk["x"])
-	yRaw, errY := base64.RawURLEncoding.DecodeString(jwk["y"])
 	dRaw, errD := base64.RawURLEncoding.DecodeString(jwk["d"])
-	if errX != nil || errY != nil || errD != nil {
+	if errD != nil {
 		return "", fmt.Errorf("decode dpop jwk base64 failed")
 	}
 
 	curve := elliptic.P256()
-	privKey := &ecdsa.PrivateKey{
-		PublicKey: ecdsa.PublicKey{
-			Curve: curve,
-			X:     new(big.Int).SetBytes(xRaw),
-			Y:     new(big.Int).SetBytes(yRaw),
-		},
-		D: new(big.Int).SetBytes(dRaw),
+	pad := func(val *big.Int, sz int) []byte {
+		buf := make([]byte, sz)
+		raw := val.Bytes()
+		copy(buf[sz-len(raw):], raw)
+		return buf
+	}
+
+	var privKey *ecdsa.PrivateKey
+	xStr := jwk["x"]
+	yStr := jwk["y"]
+	if xStr == "" || yStr == "" {
+		x, y := curve.ScalarBaseMult(dRaw)
+		xStr = base64.RawURLEncoding.EncodeToString(pad(x, 32))
+		yStr = base64.RawURLEncoding.EncodeToString(pad(y, 32))
+		jwk["x"] = xStr
+		jwk["y"] = yStr
+		privKey = &ecdsa.PrivateKey{
+			PublicKey: ecdsa.PublicKey{
+				Curve: curve,
+				X:     x,
+				Y:     y,
+			},
+			D: new(big.Int).SetBytes(dRaw),
+		}
+	} else {
+		xRaw, errX := base64.RawURLEncoding.DecodeString(xStr)
+		yRaw, errY := base64.RawURLEncoding.DecodeString(yStr)
+		if errX != nil || errY != nil {
+			return "", fmt.Errorf("decode dpop jwk base64 failed")
+		}
+		privKey = &ecdsa.PrivateKey{
+			PublicKey: ecdsa.PublicKey{
+				Curve: curve,
+				X:     new(big.Int).SetBytes(xRaw),
+				Y:     new(big.Int).SetBytes(yRaw),
+			},
+			D: new(big.Int).SetBytes(dRaw),
+		}
 	}
 
 	header := map[string]any{
@@ -585,8 +629,8 @@ func buildDPoPProof(jwk map[string]string, htu string) (string, error) {
 		"jwk": map[string]string{
 			"kty": "EC",
 			"crv": "P-256",
-			"x":   jwk["x"],
-			"y":   jwk["y"],
+			"x":   xStr,
+			"y":   yStr,
 		},
 	}
 	headerJSON, _ := json.Marshal(header)
@@ -618,13 +662,6 @@ func buildDPoPProof(jwk map[string]string, htu string) (string, error) {
 		s.Sub(n, s)
 	}
 
-	pad := func(val *big.Int) []byte {
-		buf := make([]byte, 32)
-		raw := val.Bytes()
-		copy(buf[32-len(raw):], raw)
-		return buf
-	}
-
-	sigBytes := append(pad(r), pad(s)...)
+	sigBytes := append(pad(r, 32), pad(s, 32)...)
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sigBytes), nil
 }
