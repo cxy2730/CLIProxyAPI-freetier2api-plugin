@@ -21,6 +21,11 @@ func TestConsumptionRateParsesVariants(t *testing.T) {
 		{"zero is legal", `{"consumption_rate":{"data":{"rate":0}}}`, "0"},
 		{"disabled at rate", `{"consumption_rate":{"enable":false,"data":{"rate":0.9}}}`, ""},
 		{"disabled at data", `{"consumption_rate":{"data":{"enable":false,"rate":0.9}}}`, ""},
+		// 上游会把内层对象序列化成字符串再下发：整条倍率链不能因此静默变空。
+		{"rate as string", `{"consumption_rate":"{\"enable\":true,\"data\":{\"rate\":0.94}}"}`, "0.94"},
+		{"data as string", `{"consumption_rate":{"enable":true,"data":"{\"rate\":0.88}"}}`, "0.88"},
+		{"plain text", `{"consumption_rate":"n/a"}`, ""},
+		{"empty string", `{"consumption_rate":""}`, ""},
 		{"missing", `{}`, ""},
 		{"null", ``, ""},
 	}
