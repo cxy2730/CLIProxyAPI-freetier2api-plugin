@@ -266,6 +266,36 @@ func PrepareBody(src []byte, cfg Config, resolved ResolvedModel) ([]byte, string
 	delete(obj, "model")
 	delete(obj, "function")
 
+	// 归一化 tools 数组：OpenAI 风格的 [{type: "function", function: {...}}] 转为 Trae 扁平格式 [{name: "...", parameters: {...}}]
+	if rawTools, ok := obj["tools"].([]any); ok && len(rawTools) > 0 {
+		normalized := make([]any, 0, len(rawTools))
+		for _, item := range rawTools {
+			toolMap, isMap := item.(map[string]any)
+			if !isMap {
+				continue
+			}
+			// 如果包含嵌套的 function 对象，将其属性提升到顶层并丢弃 type 包装
+			if fnObj, hasFn := toolMap["function"].(map[string]any); hasFn && fnObj != nil {
+				flatTool := make(map[string]any, len(fnObj)+len(toolMap))
+				// 复制其他可能存在的辅助字段（如 strict 等）
+				for k, v := range toolMap {
+					if k != "type" && k != "function" {
+						flatTool[k] = v
+					}
+				}
+				// 覆盖 function 内部的核心字段（name, description, parameters）
+				for k, v := range fnObj {
+					flatTool[k] = v
+				}
+				normalized = append(normalized, flatTool)
+			} else {
+				// 已经为扁平格式，直接保留
+				normalized = append(normalized, toolMap)
+			}
+		}
+		obj["tools"] = normalized
+	}
+
 	if msgs, ok := obj["messages"].([]any); ok {
 		for _, mi := range msgs {
 			m, ok := mi.(map[string]any)
