@@ -185,12 +185,10 @@ jobs:
             echo "::warning::${TAG} 不是注解标签，本版要点只会有 commit 标题"
           fi
           {
-            echo '## 通过 CPA 插件商店安装（推荐）'
+            echo '## 手动安装（当前推荐）'
             echo
-            echo '本插件已收录进 CPA 官方插件源，无需额外配置三方源。'
-            echo '在管理面板的插件商店里直接搜 **FreeTier 2API** 一键安装即可。'
-            echo
-            echo '## 手动安装'
+            echo '插件商店里的 `freetier2api` 条目仍指向已失效的原仓库，一键安装会失败；'
+            echo '在插件源更新之前，请按下面的方式手动安装。'
             echo
             echo '下载对应平台的 `freetier2api_<版本>_<goos>_<goarch>.zip`，解压后把其中的'
             echo '`freetier2api` 动态库放进 CPA 的 `plugins/` 目录。'

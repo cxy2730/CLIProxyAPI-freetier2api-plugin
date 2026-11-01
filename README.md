@@ -10,6 +10,8 @@
 
 如果这个项目帮到了你，欢迎点个 Star 支持一下。
 
+> **本仓库说明**：原仓库 `jiandanc/CLIProxyAPI-freetier2api-plugin` 已随作者账号一并从 GitHub 消失（账号与仓库均为 404），本仓库是它的延续维护线，自 **v0.1.29** 起由 `cxy2730` 接手，插件 ID 仍为 `freetier2api`，已有安装可直接覆盖升级。历史提交与 `v0.1.28` 及更早的 tag 一并保留。
+
 > **⚠️ 重要合规提示**：本项目**仅限个人学习与技术研究使用**，严禁用于任何商业售卖、API 转售、代充代刷、公开/收费共享池或任何违反各上游平台服务条款与法律法规的用途。单个供应商硬性限制最多添加 **10 个**账号。继续使用即表示您已阅读并同意文末[免责声明](#免责声明)。
 
 ## 功能特性
@@ -44,16 +46,16 @@
 
 ## 快速开始
 
-### 方式一：通过 CPA 插件商店安装（推荐）
+### 方式一：通过 CPA 插件商店安装
 
-本插件已收录至 CLIProxyAPI 官方插件源：
+本插件曾收录于 CLIProxyAPI 官方插件源，但插件源里的条目目前仍指向已失效的原仓库地址，一键安装会失败，待插件源更新后恢复：
 
 1. 打开 CLIProxyAPI 管理面板 → **插件商店**。
-2. 搜索 **FreeTier 2API** 并点击一键安装。
+2. 搜索 **FreeTier 2API** 并点击一键安装（条目恢复前请用方式二）。
 
 ### 方式二：手动安装 Release 动态库
 
-从 [Releases](https://github.com/jiandanc/CLIProxyAPI-freetier2api-plugin/releases) 下载对应平台的归档包，解压后将动态库（`freetier2api.so` / `freetier2api.dylib` / `freetier2api.dll`）放入 CPA 插件目录，并在 `config.yaml` 中启用：
+从 [Releases](https://github.com/cxy2730/CLIProxyAPI-freetier2api-plugin/releases) 下载对应平台的归档包，解压后将动态库（`freetier2api.so` / `freetier2api.dylib` / `freetier2api.dll`）放入 CPA 插件目录，并在 `config.yaml` 中启用：
 
 ```yaml
 plugins:
@@ -70,7 +72,7 @@ plugins:
 需 Go 1.22+ 与 C 编译器（启用 `CGO_ENABLED=1`），或直接使用仓库内置的 Docker 构建脚本（基于 `golang:1.24` Debian glibc 镜像）：
 
 ```bash
-git clone https://github.com/jiandanc/CLIProxyAPI-freetier2api-plugin.git
+git clone https://github.com/cxy2730/CLIProxyAPI-freetier2api-plugin.git
 cd CLIProxyAPI-freetier2api-plugin
 ./scripts/build.sh
 ```

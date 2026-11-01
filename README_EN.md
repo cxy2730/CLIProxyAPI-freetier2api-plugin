@@ -10,6 +10,8 @@ A native dynamic library plugin that connects multiple free-tier AI providers to
 
 If this project helps you, a Star would mean a lot.
 
+> **About this repository**: the original repository `jiandanc/CLIProxyAPI-freetier2api-plugin` disappeared from GitHub together with its owner's account (both the account and the repository return 404). This repository continues that line; from **v0.1.29** onward it is maintained by `cxy2730`. The plugin ID stays `freetier2api`, so existing installations can upgrade in place. History and all tags up to `v0.1.28` are preserved.
+
 > **⚠️ Important Compliance Notice**: This project is **strictly for personal learning and technical research only**. Commercial sale, API resale, paid account farming, public/paid shared pools, or any use violating upstream Terms of Service or applicable laws is strictly prohibited. Each provider is hard-limited to a maximum of **10 accounts**. By using this software, you agree to the [Disclaimer](#disclaimer) below.
 
 ## Features
@@ -44,16 +46,16 @@ If this project helps you, a Star would mean a lot.
 
 ## Quick Start
 
-### Option 1: Install via CPA Plugin Store (Recommended)
+### Option 1: Install via CPA Plugin Store
 
-This plugin is listed in the official CLIProxyAPI plugin registry:
+This plugin was listed in the official CLIProxyAPI plugin registry, but that entry still points at the now-dead original repository, so one-click install fails until the registry is updated:
 
 1. Open the CLIProxyAPI Admin Panel → **Plugin Store**.
-2. Search for **FreeTier 2API** and click Install.
+2. Search for **FreeTier 2API** and click Install (use Option 2 until the entry is fixed).
 
 ### Option 2: Manual Installation from Releases
 
-Download the archive for your platform from [Releases](https://github.com/jiandanc/CLIProxyAPI-freetier2api-plugin/releases), extract the shared library (`freetier2api.so` / `freetier2api.dylib` / `freetier2api.dll`) into your CPA plugins directory, and enable it in `config.yaml`:
+Download the archive for your platform from [Releases](https://github.com/cxy2730/CLIProxyAPI-freetier2api-plugin/releases), extract the shared library (`freetier2api.so` / `freetier2api.dylib` / `freetier2api.dll`) into your CPA plugins directory, and enable it in `config.yaml`:
 
 ```yaml
 plugins:
@@ -70,7 +72,7 @@ plugins:
 Requires Go 1.22+ and a C compiler (`CGO_ENABLED=1`), or use the bundled Docker build script (`golang:1.24` Debian glibc image):
 
 ```bash
-git clone https://github.com/jiandanc/CLIProxyAPI-freetier2api-plugin.git
+git clone https://github.com/cxy2730/CLIProxyAPI-freetier2api-plugin.git
 cd CLIProxyAPI-freetier2api-plugin
 ./scripts/build.sh
 ```
