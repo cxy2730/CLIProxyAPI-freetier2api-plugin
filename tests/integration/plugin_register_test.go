@@ -194,7 +194,7 @@ func TestBackgroundAutoAllIgnoresRequestCallbackScope(t *testing.T) {
 	const requestCallbackID = "req-scope-1"
 	raw, err := testApp.HandleMethod(pluginabi.MethodManagementHandle, mustMarshal(pluginapi.ManagementRequest{
 		Method:  "POST",
-		Path:    "/v0/management/plugins/freetier2api/tasks/auto_all",
+		Path:    "/v0/management/plugins/freetier/tasks/auto_all",
 		Headers: http.Header{"X-Host-Callback-Id": {requestCallbackID}},
 	}))
 	if err != nil {
@@ -232,7 +232,7 @@ func autoAllRunning(t *testing.T) bool {
 	t.Helper()
 	raw, err := testApp.HandleMethod(pluginabi.MethodManagementHandle, mustMarshal(pluginapi.ManagementRequest{
 		Method: "GET",
-		Path:   "/v0/management/plugins/freetier2api/tasks/auto_all/status",
+		Path:   "/v0/management/plugins/freetier/tasks/auto_all/status",
 	}))
 	if err != nil {
 		t.Fatalf("status handleMethod error: %v", err)
@@ -255,7 +255,7 @@ func TestManagementAutoAllRouteDispatched(t *testing.T) {
 
 	raw, err := testApp.HandleMethod(pluginabi.MethodManagementHandle, mustMarshal(pluginapi.ManagementRequest{
 		Method: "POST",
-		Path:   "/v0/management/plugins/freetier2api/tasks/auto_all",
+		Path:   "/v0/management/plugins/freetier/tasks/auto_all",
 	}))
 	if err != nil {
 		t.Fatalf("handleMethod error: %v", err)

@@ -17,7 +17,7 @@ import (
 )
 
 func TestConsoleAutoAllShowsUpstreamReasons(t *testing.T) {
-	page := Page("/plugins/freetier2api")
+	page := Page("/plugins/freetier")
 
 	// 跳过与失败都必须带上游原因。
 	if !strings.Contains(page, `parts.push("跳过 " + skips + reasonText(results, "skipped"));`) {
@@ -36,7 +36,7 @@ func TestConsoleAutoAllShowsUpstreamReasons(t *testing.T) {
 }
 
 func TestConsoleAutoAllHandlesCancelled(t *testing.T) {
-	page := Page("/plugins/freetier2api")
+	page := Page("/plugins/freetier")
 
 	if !strings.Contains(page, `var cancelledNote = (result.cancelled && result.message) ? result.message + "\n" : "";`) {
 		t.Fatal("cancelled 的 message 必须置顶展示，它比逐账号明细更重要")
@@ -48,7 +48,7 @@ func TestConsoleAutoAllHandlesCancelled(t *testing.T) {
 }
 
 func TestConsoleAutoAllHeadMatchesCounts(t *testing.T) {
-	page := Page("/plugins/freetier2api")
+	page := Page("/plugins/freetier")
 
 	if !strings.Contains(page, `var summaryHead = okAccounts + " 个账号全部成功";`) {
 		t.Fatal("头部三个计数必须各自对应一句，不能写「有执行结果」")
@@ -60,7 +60,7 @@ func TestConsoleAutoAllHeadMatchesCounts(t *testing.T) {
 }
 
 func TestConsoleBannerHasManualClose(t *testing.T) {
-	page := Page("/plugins/freetier2api")
+	page := Page("/plugins/freetier")
 
 	if !strings.Contains(page, `el.className = "banner show " + kind + (timeout > 0 ? "" : " persist");`) {
 		t.Fatal("常驻横幅必须打上 persist 标记")

@@ -1,6 +1,6 @@
 package app
 
-// freetier2api —— 多供应商免费额度插件。
+// freetier —— 多供应商免费额度插件。
 //
 // 本文件包含插件身份、RPC 方法分发与注册响应。C ABI 在 cgo.go；
 // 供应商注册表由 App 构造，组合根在 vendors.go。
@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	pluginID          = "freetier2api"
+	pluginID          = "freetier"
 	pluginDisplayName = "FreeTier 2API"
 	pluginAuthor      = "cxy2730"
 	pluginRepository  = "https://github.com/cxy2730/CLIProxyAPI-freetier2api-plugin"

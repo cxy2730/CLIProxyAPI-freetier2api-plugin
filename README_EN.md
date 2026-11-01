@@ -10,7 +10,7 @@ A native dynamic library plugin that connects multiple free-tier AI providers to
 
 If this project helps you, a Star would mean a lot.
 
-> **About this repository**: the original repository `jiandanc/CLIProxyAPI-freetier2api-plugin` disappeared from GitHub together with its owner's account (both the account and the repository return 404). This repository continues that line; from **v0.1.29** onward it is maintained by `cxy2730`. The plugin ID stays `freetier2api`, so existing installations can upgrade in place. History and all tags up to `v0.1.28` are preserved.
+> **About this repository**: the original repository `jiandanc/CLIProxyAPI-freetier2api-plugin` disappeared from GitHub together with its owner's account (both the account and the repository return 404). This repository continues that line; from **v0.1.29** onward it is maintained by `cxy2730`. The plugin ID stays `freetier`, so existing installations can upgrade in place. History and all tags up to `v0.1.28` are preserved.
 
 ## Features
 
@@ -53,14 +53,14 @@ This plugin was listed in the official CLIProxyAPI plugin registry, but that ent
 
 ### Option 2: Manual Installation from Releases
 
-Download the archive for your platform from [Releases](https://github.com/cxy2730/CLIProxyAPI-freetier2api-plugin/releases), extract the shared library (`freetier2api.so` / `freetier2api.dylib` / `freetier2api.dll`) into your CPA plugins directory, and enable it in `config.yaml`:
+Download the archive for your platform from [Releases](https://github.com/cxy2730/CLIProxyAPI-freetier2api-plugin/releases), extract the shared library (`freetier.so` / `freetier.dylib` / `freetier.dll`) into your CPA plugins directory, and enable it in `config.yaml`:
 
 ```yaml
 plugins:
   enabled: true
   dir: "/path/to/cpa/plugins"
   configs:
-    freetier2api:
+    freetier:
       enabled: true
       enabled_realms: "cn,global"
 ```
@@ -75,7 +75,7 @@ cd CLIProxyAPI-freetier2api-plugin
 ./scripts/build.sh
 ```
 
-The compiled shared library is written to `dist/freetier2api.<so|dylib|dll>`.
+The compiled shared library is written to `dist/freetier.<so|dylib|dll>`.
 
 ## Usage
 
@@ -84,7 +84,7 @@ The compiled shared library is written to `dist/freetier2api.<so|dylib|dll>`.
 Once CLIProxyAPI is running, open the embedded console:
 
 ```text
-http://<CPA-HOST>:8317/v0/resource/plugins/freetier2api/console
+http://<CPA-HOST>:8317/v0/resource/plugins/freetier/console
 ```
 
 - Click **"添加账号 ▾" (Add Account)**, choose a provider, and complete the browser OAuth flow or enter an API Key (up to 10 accounts per provider).
@@ -121,7 +121,7 @@ Aliases are stored in `state.json` under `account_aliases`, keyed by account ide
 
 ## Configuration
 
-Configure under `plugins.configs.freetier2api` in `config.yaml` (runtime settings can also be toggled live in the web console):
+Configure under `plugins.configs.freetier` in `config.yaml` (runtime settings can also be toggled live in the web console):
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -135,7 +135,7 @@ Configure under `plugins.configs.freetier2api` in `config.yaml` (runtime setting
 | `model_name_tag` | string | `off` | Channel tag on model IDs: `off` (default) / `prefix` / `suffix`. When enabled, every vendor model gets a vendor prefix/suffix in its public ID (e.g. `zcodeglobal-GLM-5.3`) so same-name models can be pinned to a channel; tags are per-vendor, not per-account. Once tagged, same-name models are no longer merged across vendors. Takes effect after the host rebuilds its model registry (restart or credential reload; the console shows a restart-pending hint) |
 | `disabled_models` | string / list | empty | Disabled models (`vendor:model` or bare name) |
 | `extra_models` | string | empty | Additional model IDs to register (comma-separated) |
-| `state_dir` | string | `~/.freetier2api-plugin` | State and cache directory |
+| `state_dir` | string | `~/.freetier-plugin` | State and cache directory |
 | `log_level` | string | `info` | Log level: `debug` / `info` / `error` |
 
 ## Project Architecture

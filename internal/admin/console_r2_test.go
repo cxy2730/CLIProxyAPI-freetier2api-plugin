@@ -14,7 +14,7 @@ import (
 )
 
 func TestConsolePageGuardsZeroTotalDivisor(t *testing.T) {
-	page := Page("/plugins/freetier2api")
+	page := Page("/plugins/freetier")
 
 	// 分母守卫必须只算一次，进度条与百分比共用同一判据。
 	if !strings.Contains(page, "var ratioKnown = hasTotal && quota.total > 0;") {
@@ -42,7 +42,7 @@ func TestConsolePageGuardsZeroTotalDivisor(t *testing.T) {
 }
 
 func TestConsolePageUsesBackendCheckinPending(t *testing.T) {
-	page := Page("/plugins/freetier2api")
+	page := Page("/plugins/freetier")
 
 	if !strings.Contains(page, "var pendingToday = !!account.checkin_pending;") {
 		t.Fatal("待复核必须读后端下发的 checkin_pending")

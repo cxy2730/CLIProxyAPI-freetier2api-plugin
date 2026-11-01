@@ -173,7 +173,7 @@ func ApplyChatHeaders(req *http.Request, token, model string) {
 	req.Header.Set("X-Lang", "zh-CN")
 	req.Header.Set("X-Client-Type", "pc")
 	req.Header.Set("X-Trace-Id", core.RandomHex(16))
-	req.Header.Set("x_trace_id", "freetier2api")
+	req.Header.Set("x_trace_id", "freetier")
 	if strings.TrimSpace(token) != "" {
 		req.Header.Set("Authorization", bearer(token))
 		req.Header.Set("X-Authorization", bearer(token))

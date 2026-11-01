@@ -10,7 +10,7 @@
 
 如果这个项目帮到了你，欢迎点个 Star 支持一下。
 
-> **本仓库说明**：原仓库 `jiandanc/CLIProxyAPI-freetier2api-plugin` 已随作者账号一并从 GitHub 消失（账号与仓库均为 404），本仓库是它的延续维护线，自 **v0.1.29** 起由 `cxy2730` 接手，插件 ID 仍为 `freetier2api`，已有安装可直接覆盖升级。历史提交与 `v0.1.28` 及更早的 tag 一并保留。
+> **本仓库说明**：原仓库 `jiandanc/CLIProxyAPI-freetier2api-plugin` 已随作者账号一并从 GitHub 消失（账号与仓库均为 404），本仓库是它的延续维护线，自 **v0.1.29** 起由 `cxy2730` 接手，插件 ID 仍为 `freetier`，已有安装可直接覆盖升级。历史提交与 `v0.1.28` 及更早的 tag 一并保留。
 
 ## 功能特性
 
@@ -53,14 +53,14 @@
 
 ### 方式二：手动安装 Release 动态库
 
-从 [Releases](https://github.com/cxy2730/CLIProxyAPI-freetier2api-plugin/releases) 下载对应平台的归档包，解压后将动态库（`freetier2api.so` / `freetier2api.dylib` / `freetier2api.dll`）放入 CPA 插件目录，并在 `config.yaml` 中启用：
+从 [Releases](https://github.com/cxy2730/CLIProxyAPI-freetier2api-plugin/releases) 下载对应平台的归档包，解压后将动态库（`freetier.so` / `freetier.dylib` / `freetier.dll`）放入 CPA 插件目录，并在 `config.yaml` 中启用：
 
 ```yaml
 plugins:
   enabled: true
   dir: "/path/to/cpa/plugins"
   configs:
-    freetier2api:
+    freetier:
       enabled: true
       enabled_realms: "cn,global"
 ```
@@ -75,7 +75,7 @@ cd CLIProxyAPI-freetier2api-plugin
 ./scripts/build.sh
 ```
 
-编译产物输出至 `dist/freetier2api.<so|dylib|dll>`。
+编译产物输出至 `dist/freetier.<so|dylib|dll>`。
 
 ## 使用方法
 
@@ -84,7 +84,7 @@ cd CLIProxyAPI-freetier2api-plugin
 启动 CLIProxyAPI 后，访问内嵌控制台页面：
 
 ```text
-http://<CPA地址>:8317/v0/resource/plugins/freetier2api/console
+http://<CPA地址>:8317/v0/resource/plugins/freetier/console
 ```
 
 - 点击 **「添加账号 ▾」** 选择对应供应商，按提示在浏览器完成 OAuth 授权或填入 API Key（每个供应商最多可添加 10 个账号）。
@@ -121,7 +121,7 @@ curl http://localhost:8317/v1/messages \
 
 ## 配置说明
 
-在宿主 `config.yaml` 的 `plugins.configs.freetier2api` 下可配置以下常用项（大多数运行期设置可直接在控制台页面调整并即时生效）：
+在宿主 `config.yaml` 的 `plugins.configs.freetier` 下可配置以下常用项（大多数运行期设置可直接在控制台页面调整并即时生效）：
 
 | 配置键 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
@@ -135,7 +135,7 @@ curl http://localhost:8317/v1/messages \
 | `model_name_tag` | string | `off` | 模型名渠道标识：`off`（默认）/ `prefix` / `suffix`。开启后各供应商的模型对外 ID 自动带渠道前缀或后缀（如 `zcodeglobal-GLM-5.3`），同名模型可按渠道定点选择；标识按供应商统一生成、不区分账号。改动后需宿主重建模型注册表生效（重启或等凭据重载，控制台会提示「待生效」） |
 | `disabled_models` | string / list | 空 | 禁用模型列表（支持 `vendor:model` 或裸名，与控制台勾选合并） |
 | `extra_models` | string | 空 | 额外补充注册的模型名（逗号分隔） |
-| `state_dir` | string | `~/.freetier2api-plugin` | 状态与缓存目录（若存在 `~/.cli-proxy-api` 则默认使用其下 `freetier2api` 子目录） |
+| `state_dir` | string | `~/.freetier-plugin` | 状态与缓存目录（若存在 `~/.cli-proxy-api` 则默认使用其下 `freetier` 子目录） |
 | `log_level` | string | `info` | 日志级别：`debug` / `info` / `error` |
 
 ## 项目架构
