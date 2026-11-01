@@ -12,8 +12,6 @@ If this project helps you, a Star would mean a lot.
 
 > **About this repository**: the original repository `jiandanc/CLIProxyAPI-freetier2api-plugin` disappeared from GitHub together with its owner's account (both the account and the repository return 404). This repository continues that line; from **v0.1.29** onward it is maintained by `cxy2730`. The plugin ID stays `freetier2api`, so existing installations can upgrade in place. History and all tags up to `v0.1.28` are preserved.
 
-> **⚠️ Important Compliance Notice**: This project is **strictly for personal learning and technical research only**. Commercial sale, API resale, paid account farming, public/paid shared pools, or any use violating upstream Terms of Service or applicable laws is strictly prohibited. Each provider is hard-limited to a maximum of **10 accounts**. By using this software, you agree to the [Disclaimer](#disclaimer) below.
-
 ## Features
 
 - Native integration with CLIProxyAPI's Anthropic `/v1/messages`, OpenAI `/v1/chat/completions`, and OpenAI `/v1/responses` endpoints without running a separate gateway service
@@ -177,13 +175,6 @@ This project references or adapts protocol designs, ABI contracts, and metadata 
 ## Contributing
 
 Friendly discussion is welcome. If you run into issues, try asking Claude Code, Codex, or similar tools for help first — most problems can be solved that way. PRs are even better.
-
-## Disclaimer
-
-1. **Personal & Educational Use Only**: This project is provided strictly for personal learning, technical research, and protocol interoperability testing. Commercial sale, API resale, paid hosting, automated reward farming, public shared pools, or any illegal use is strictly prohibited.
-2. **Non-Affiliation**: This project is an independent open-source work and is not affiliated with, endorsed by, or sponsored by Tencent (WorkBuddy / CodeBuddy), Alibaba (Qoder), Zhipu / Z.AI (ZCode), ByteDance (Trae), Huawei Cloud (CodeArts), MiniMax, Cline, OpenCode, or any other upstream provider.
-3. **Compliance & Assumption of Risk**: Accessing services via unofficial clients or using automated check-in/task features may violate the Terms of Service (ToS) of upstream platforms and may result in account suspension, quota revocation, or other legal/compliance consequences. Users are solely responsible for ensuring their usage complies with all applicable Terms of Service and laws. The authors and contributors assume no liability for any direct or indirect damages arising from the use of this software.
-4. **Takedown Contact**: If any upstream provider or rights holder believes any part of this repository infringes upon your legitimate rights, please open an Issue and the relevant adapter code will be promptly removed.
 
 ## License
 

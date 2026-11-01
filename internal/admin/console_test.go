@@ -686,13 +686,12 @@ func TestConsoleModelOptionalColumnsHiddenByDefault(t *testing.T) {
 	}
 }
 
-func TestConsolePageSettingsLabelsAndDisclaimer(t *testing.T) {
+func TestConsolePageSettingsLabels(t *testing.T) {
 	page := Page("/plugins/freetier2api")
 	for _, required := range []string{
 		"每日自动签到",
 		// 开关只影响签到后的两个后续任务，标签必须写清范围，不能叫「每日自动任务」。
 		"签到后自动跑后续任务（开学季 / 连登奖励）",
-		"合规与免责声明",
 		"MAX_ACCOUNTS_PER_VENDOR = 10",
 	} {
 		if !strings.Contains(page, required) {

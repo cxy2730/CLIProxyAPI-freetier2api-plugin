@@ -6,54 +6,44 @@
 <title>FreeTier 2API</title>
 <style>
 :root {
-  color-scheme: light dark;
-  --bg: #eef2f7; --fg: #171e28; --muted: #5d6b7d; --card: #ffffff;
-  --border: #e3e9f1; --border-strong: #cdd6e2;
-  --accent: #1668dc;
-  --accent-soft: rgba(22,104,220,.08); --grad: linear-gradient(135deg,#1d4ed8 0%,#1668dc 45%,#0ea5e9 100%);
-  --ok: #15803d; --ok-soft: rgba(34,197,94,.12);
-  --warn: #b45309; --warn-soft: rgba(245,158,11,.14);
-  --err: #b91c1c; --err-soft: rgba(239,68,68,.11);
-  --row-hover: rgba(22,104,220,.05);
-  --shadow-card: 0 1px 2px rgba(16,24,40,.05), 0 10px 28px -14px rgba(16,24,40,.14);
-  --shadow-pop: 0 12px 32px -8px rgba(16,24,40,.22);
+  color-scheme: light;
+  /* AURORA — 苹果式浅色玻璃界面（主题参考 myproxy 管理面板） */
+  --bg: #F1F1F3; --fg: #1D1D20; --muted: #7C7C84; --card: rgba(255,255,255,.9);
+  --border: rgba(60,60,67,.11); --border-strong: rgba(60,60,67,.2);
+  --accent: #4A6D8C; --accent-2: #3A5872;
+  --accent-soft: rgba(74,109,140,.09); --accent-line: rgba(74,109,140,.26);
+  --grad: linear-gradient(135deg,#5C7C97 0%,#4A6D8C 45%,#41586E 100%);
+  --ok: #5B9F78; --ok-soft: rgba(91,159,120,.11);
+  --warn: #B08A4A; --warn-soft: rgba(176,138,74,.11);
+  --err: #B7655B; --err-soft: rgba(183,101,91,.10);
+  --row-hover: rgba(74,109,140,.05);
+  --shadow-card: 0 1px 2px rgba(28,28,32,.035), 0 6px 20px -10px rgba(28,28,32,.10);
+  --shadow-pop: 0 2px 5px rgba(28,28,32,.04), 0 18px 40px -18px rgba(28,28,32,.16);
   --radius: 14px;
-  /* 供应商彩色芯片：vendorChipClass() 按 vendor_id 哈希取 v0..v5，两套主题各自覆盖 */
-  --chip-0-bg: rgba(124,58,237,.1);  --chip-0-fg: #6d28d9;
-  --chip-1-bg: rgba(8,145,178,.12);  --chip-1-fg: #155e75;
-  --chip-2-bg: rgba(180,83,9,.12);   --chip-2-fg: #92400e;
-  --chip-3-bg: rgba(225,29,72,.1);   --chip-3-fg: #be123c;
-  --chip-4-bg: rgba(22,101,52,.12);  --chip-4-fg: #166534;
-  --chip-5-bg: rgba(30,64,175,.1);   --chip-5-fg: #1e40af;
-}
-@media (prefers-color-scheme: dark) {
-  :root { --bg: #0a0f16; --fg: #e6ecf4; --muted: #8fa0b3; --card: #121a24;
-          --border: #212d3d; --border-strong: #324154;
-          --accent: #5290f5;
-          --accent-soft: rgba(82,144,245,.16); --grad: linear-gradient(135deg,#1e3a8a 0%,#1d4ed8 45%,#0284c7 100%);
-          --ok: #4ade80; --ok-soft: rgba(74,222,128,.13);
-          --warn: #fbbf24; --warn-soft: rgba(251,191,36,.13);
-          --err: #f87171; --err-soft: rgba(248,113,113,.13);
-          --row-hover: rgba(82,144,245,.08);
-          --shadow-card: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px -16px rgba(0,0,0,.5);
-          --shadow-pop: 0 16px 40px -8px rgba(0,0,0,.6);
-          --chip-0-bg: rgba(167,139,250,.16); --chip-0-fg: #c4b5fd;
-          --chip-1-bg: rgba(34,211,238,.14);  --chip-1-fg: #67e8f9;
-          --chip-2-bg: rgba(251,191,36,.14);  --chip-2-fg: #fcd34d;
-          --chip-3-bg: rgba(251,113,133,.14); --chip-3-fg: #fda4af;
-          --chip-4-bg: rgba(134,239,172,.13); --chip-4-fg: #86efac;
-          --chip-5-bg: rgba(147,197,253,.14); --chip-5-fg: #93c5fd; }
+  /* 供应商彩色芯片：vendorChipClass() 按 vendor_id 哈希取 v0..v5（降饱和一档贴近玻璃背景） */
+  --chip-0-bg: rgba(124,58,237,.08);  --chip-0-fg: #6d28d9;
+  --chip-1-bg: rgba(8,145,178,.10);   --chip-1-fg: #155e75;
+  --chip-2-bg: rgba(180,83,9,.10);    --chip-2-fg: #92400e;
+  --chip-3-bg: rgba(225,29,72,.08);   --chip-3-fg: #be123c;
+  --chip-4-bg: rgba(22,101,52,.10);   --chip-4-fg: #166534;
+  --chip-5-bg: rgba(30,64,175,.08);   --chip-5-fg: #1e40af;
+  /* 动效 token（AURORA） */
+  --d1:180ms; --d2:320ms; --d3:620ms;
+  --ease:cubic-bezier(.32,.72,0,1); --ease-out:cubic-bezier(.16,1,.3,1);
+  --ff:-apple-system,"SF Pro Display","SF Pro Text","PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+  --ff-mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
 }
 * { box-sizing: border-box; }
 body {
   margin: 0; color: var(--fg);
-  font: 13.5px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+  font: var(--f-4,14px)/1.55 var(--ff);
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
   background: var(--bg);
-  background-image: radial-gradient(rgba(28,42,60,.07) 1px, transparent 1px);
-  background-size: 22px 22px;
-}
-@media (prefers-color-scheme: dark) {
-  body { background-image: radial-gradient(rgba(148,163,184,.08) 1px, transparent 1px); }
+  /* 环境光：两团低饱和色光，给玻璃一个可折射的背景（AURORA） */
+  background-image:
+    radial-gradient(46vmax 46vmax at -8% -12%, rgba(150,175,205,.30), transparent 66%),
+    radial-gradient(40vmax 40vmax at 108% 6%, rgba(196,178,176,.22), transparent 66%);
+  background-attachment: fixed;
 }
 ::selection { background: var(--accent-soft); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
@@ -62,23 +52,25 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* ---- 头部：slim 渐变头带（宿主外壳悬浮按钮压在右上，保持低调不打架） ---- */
-header { margin: 14px 20px 0; border-radius: 14px; padding: 15px 22px;
-         background: var(--grad); color: #fff; position: relative; overflow: hidden;
-         box-shadow: 0 10px 26px -12px rgba(22,104,220,.55); }
+header { margin: 14px 20px 0; border-radius: var(--radius); padding: 16px 22px;
+         background: rgba(255,255,255,.82); border: 1px solid rgba(255,255,255,.72);
+         box-shadow: var(--shadow-card); position: relative; overflow: hidden;
+         backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
 header::before { content: ""; position: absolute; width: 300px; height: 300px; border-radius: 50%;
                  right: -70px; top: -160px;
-                 background: radial-gradient(circle, rgba(255,255,255,.26), transparent 65%); }
-header h1 { margin: 0; font-size: 19px; font-weight: 750; letter-spacing: -.01em; }
+                 background: radial-gradient(circle, rgba(74,109,140,.09), transparent 65%); }
+header h1 { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: -.3px; color: var(--fg); }
 .sub { color: var(--muted); font-size: 12.5px; }
-header .sub { color: rgba(255,255,255,.92); margin-top: 2px; }
+header .sub { color: var(--muted); margin-top: 2px; }
 main { padding: 14px 20px 48px; }
 
-.card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
-        padding: 16px 18px; margin-bottom: 14px; box-shadow: var(--shadow-card); }
+.card { background: rgba(255,255,255,.82); border: 1px solid rgba(255,255,255,.72);
+        border-radius: var(--radius); padding: 16px 18px; margin-bottom: 14px;
+        box-shadow: var(--shadow-card); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
 .card h2 { margin: 0 0 12px; font-size: 14.5px; font-weight: 700;
            display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
 .card h2::before { content: ""; width: 9px; height: 9px; border-radius: 3px;
-                   background: var(--grad); flex: none; box-shadow: 0 0 8px rgba(22,104,220,.45); }
+                   background: var(--grad); flex: none; box-shadow: 0 0 8px rgba(74,109,140,.35); }
 .card h2 .muted { font-weight: 400; font-size: 12.5px; }
 
 [hidden], [hidden="true"], [hidden=""] { display: none !important; }
@@ -115,7 +107,6 @@ thead th { position: sticky; top: -1px; z-index: 1;
            background: rgba(255,255,255,.86); backdrop-filter: blur(8px);
            color: var(--muted); font-size: 11.5px; font-weight: 650; letter-spacing: .05em;
            border-bottom: 1px solid var(--border-strong); }
-@media (prefers-color-scheme: dark) { thead th { background: rgba(18,26,36,.86); } }
 tbody tr { transition: background .12s ease; }
 tbody tr:hover td { background: var(--row-hover); }
 tbody tr:hover td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
@@ -151,15 +142,10 @@ th.sortable .th-sort-wrap { display: inline-flex; align-items: center; gap: 3px;
 .bar { position: relative; display: inline-block; width: 72px; height: 6px;
        border-radius: 4px; background: var(--border); vertical-align: middle; overflow: hidden; }
 .bar i { display: block; height: 100%; border-radius: 4px;
-         background: linear-gradient(90deg, #34d399, #059669);
+         background: linear-gradient(90deg, #5B9F78, #3E7A57);
          transition: width .3s ease; }
-.bar.warn i { background: linear-gradient(90deg, #fbbf24, #d97706); }
-.bar.err  i { background: linear-gradient(90deg, #f87171, #dc2626); }
-@media (prefers-color-scheme: dark) {
-  .bar i { background: linear-gradient(90deg, #34d399, #10b981); }
-  .bar.warn i { background: linear-gradient(90deg, #fcd34d, #f59e0b); }
-  .bar.err i { background: linear-gradient(90deg, #fca5a5, #ef4444); }
-}
+.bar.warn i { background: linear-gradient(90deg, #d4a94f, #b08a4a); }
+.bar.err  i { background: linear-gradient(90deg, #cf7d72, #b7655b); }
 
 .muted { color: var(--muted); }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -250,8 +236,6 @@ input.aliasinput:focus { outline: none; border-color: var(--accent); box-shadow:
 .banner.ok   { background: var(--ok-soft);   border-left: 3px solid var(--ok);   color: var(--ok); }
 .banner.warn { background: var(--warn-soft); border-left: 3px solid var(--warn); color: var(--warn); }
 .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
-.disclaimer { padding: 10px 14px; border-radius: 10px; margin-bottom: 14px; font-size: 12.5px; background: var(--warn-soft); border: 1px solid transparent; border-left: 3px solid var(--warn); color: var(--fg); line-height: 1.55; }
-
 /* ---- 套餐领取弹窗 ---- */
 .modal { position: fixed; inset: 0; z-index: 60; display: none; align-items: center;
          justify-content: center; padding: 20px; background: rgba(9,13,18,.55); backdrop-filter: blur(3px); }
@@ -334,9 +318,6 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   <div class="sub">WorkBuddy / Qoder 账号、额度、模型与任务管理 · 本地零凭证存储</div>
 </header>
 <main>
-  <div class="disclaimer">
-    ⚠️ <b>合规与免责声明：</b>本项目仅供个人学习与技术研究使用（单供应商最多添加 10 个账号），严禁用于任何商业售卖、API 转售、代刷代充或违反各上游平台服务条款及法律法规的非法用途。使用本插件产生的一切风险（含账号封禁、权益清零等）均由使用者自行承担。
-  </div>
   <div class="card" id="keyBox" hidden>
     <h2>管理密钥</h2>
     <div class="row">
