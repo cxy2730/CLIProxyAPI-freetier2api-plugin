@@ -285,6 +285,102 @@ func TestPrepareBodyBuildsTraeCodeEnvelope(t *testing.T) {
 	}
 }
 
+// TestPrepareBodyNormalizesOpenAITools 锁定 tools 扁平化：
+// OpenAI 嵌套格式 [{type:"function", function:{...}}] 必须转为 Trae 扁平格式，
+// 否则 llm_raw_chat 网关直接 400（见 2026-11-01 spec）。
+func TestPrepareBodyNormalizesOpenAITools(t *testing.T) {
+	cfg := ConfigFor(RegionCN)
+	resolved := ResolvedModel{ConfigName: "glm-5.2", WireName: "glm-5.2__dev"}
+	src := []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}],"tools":[
+		{"type":"function","function":{"name":"get_weather","description":"查天气","parameters":{"type":"object","properties":{}}}}
+	]}`)
+
+	body, _, errPrep := PrepareBody(src, cfg, resolved)
+	if errPrep != nil {
+		t.Fatalf("PrepareBody: %v", errPrep)
+	}
+	var got map[string]any
+	if errJSON := json.Unmarshal(body, &got); errJSON != nil {
+		t.Fatalf("decode body: %v", errJSON)
+	}
+	tools, okTools := got["tools"].([]any)
+	if !okTools || len(tools) != 1 {
+		t.Fatalf("tools 应为长度 1 的数组: %v", got["tools"])
+	}
+	tool, _ := tools[0].(map[string]any)
+	if _, hasType := tool["type"]; hasType {
+		t.Error("扁平格式不应保留外层 type 字段")
+	}
+	if _, hasFn := tool["function"]; hasFn {
+		t.Error("扁平格式不应保留 function 嵌套")
+	}
+	if tool["name"] != "get_weather" || tool["description"] != "查天气" {
+		t.Errorf("function 内字段未提升到根层级: %v", tool)
+	}
+	params, okParams := tool["parameters"].(map[string]any)
+	if !okParams || params["type"] != "object" {
+		t.Errorf("parameters 未提升到根层级: %v", tool["parameters"])
+	}
+	// content 块包装不受归一化影响。
+	msgs, _ := got["messages"].([]any)
+	first, _ := msgs[0].(map[string]any)
+	if _, okBlocks := first["content"].([]any); !okBlocks {
+		t.Errorf("content 块包装被破坏: %v", first["content"])
+	}
+}
+
+// 已是扁平格式的 tools 必须原样保留（幂等，向后兼容 Trae 官方客户端直发）。
+func TestPrepareBodyKeepsFlatTools(t *testing.T) {
+	cfg := ConfigFor(RegionCN)
+	resolved := ResolvedModel{ConfigName: "glm-5.2", WireName: "glm-5.2__dev"}
+	src := []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}],"tools":[
+		{"name":"get_weather","description":"查天气","parameters":{"type":"object"}}
+	]}`)
+
+	body, _, errPrep := PrepareBody(src, cfg, resolved)
+	if errPrep != nil {
+		t.Fatalf("PrepareBody: %v", errPrep)
+	}
+	var got map[string]any
+	if errJSON := json.Unmarshal(body, &got); errJSON != nil {
+		t.Fatalf("decode body: %v", errJSON)
+	}
+	tools, _ := got["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("tools 长度 = %d, want 1", len(tools))
+	}
+	tool, _ := tools[0].(map[string]any)
+	if tool["name"] != "get_weather" || tool["description"] != "查天气" {
+		t.Errorf("扁平 tools 被改写: %v", tool)
+	}
+}
+
+// 未传 tools / tools 为空数组时必须零改动。
+func TestPrepareBodyLeavesMissingOrEmptyTools(t *testing.T) {
+	cfg := ConfigFor(RegionCN)
+	resolved := ResolvedModel{ConfigName: "glm-5.2", WireName: "glm-5.2__dev"}
+
+	for name, src := range map[string][]byte{
+		"无tools":   []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}`),
+		"空tools":   []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}],"tools":[]}`),
+		"非数组tools": []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}],"tools":null}`),
+	} {
+		body, _, errPrep := PrepareBody(src, cfg, resolved)
+		if errPrep != nil {
+			t.Fatalf("%s: PrepareBody: %v", name, errPrep)
+		}
+		var got map[string]any
+		if errJSON := json.Unmarshal(body, &got); errJSON != nil {
+			t.Fatalf("%s: decode body: %v", name, errJSON)
+		}
+		if v, present := got["tools"]; present && v != nil {
+			if arr, ok := v.([]any); !ok || len(arr) != 0 {
+				t.Errorf("%s: tools 不应被改写: %v", name, v)
+			}
+		}
+	}
+}
+
 func TestApplyTraeHeadersSetsIDEIdentity(t *testing.T) {
 	cfg := ConfigFor(RegionCN)
 	cred := testCredential()
