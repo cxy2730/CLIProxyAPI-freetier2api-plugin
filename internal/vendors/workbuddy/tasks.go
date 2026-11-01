@@ -2953,27 +2953,59 @@ func BuildQuotaResponse(credential *Credential, balance *Balance) pluginapi.Quot
 			pluginapi.QuotaMetric{Key: "credit_used", Label: "已用积分", Value: used, Format: "number"})
 	}
 	if len(balance.Packages) > 0 {
-		buckets := make([]pluginapi.QuotaBucket, 0, len(balance.Packages))
+		// 同名包先合并：营销活动会下发一串同名的「裂变包」，每个 100/100，
+		// 不合并就是五条 100% 进度条，把真正在消耗的套餐挤到看不见。
+		// 合并按首次出现顺序，周期/到期时间取第一个非空值。
+		type packageAggregate struct {
+			remain   float64
+			total    float64
+			period   string
+			expireAt int64
+			resetAt  int64
+		}
+		order := make([]string, 0, len(balance.Packages))
+		merged := make(map[string]*packageAggregate, len(balance.Packages))
 		for _, pkg := range balance.Packages {
-			fraction := 0.0
-			if pkg.Total > 0 {
-				fraction = pkg.Remain / pkg.Total
+			agg, ok := merged[pkg.Name]
+			if !ok {
+				agg = &packageAggregate{}
+				merged[pkg.Name] = agg
+				order = append(order, pkg.Name)
 			}
-			description := formatCreditAmount(pkg.Remain) + " / " + formatCreditAmount(pkg.Total)
-			if pkg.Period != "" {
-				description += " · 周期 " + pkg.Period
+			agg.remain += pkg.Remain
+			agg.total += pkg.Total
+			if agg.period == "" {
+				agg.period = pkg.Period
+			}
+			if agg.expireAt == 0 {
+				agg.expireAt = pkg.ExpireAt
+			}
+			if agg.resetAt == 0 {
+				agg.resetAt = pkg.ResetAt
+			}
+		}
+		buckets := make([]pluginapi.QuotaBucket, 0, len(order))
+		for _, name := range order {
+			agg := merged[name]
+			fraction := 0.0
+			if agg.total > 0 {
+				fraction = agg.remain / agg.total
+			}
+			description := formatCreditAmount(agg.remain) + " / " + formatCreditAmount(agg.total)
+			if agg.period != "" {
+				description += " · 周期 " + agg.period
 			}
 			bucket := pluginapi.QuotaBucket{
-				Window:            pkg.Name,
+				Window:            name,
 				RemainingFraction: fraction,
 				Description:       description,
 			}
 			// 到期（作废）与回满（周期重置）分开取值：企业额度到点回满，
 			// 不能被展示成「即将过期」。
-			if pkg.ExpireAt > 0 {
-				bucket.ResetTime = FormatUnixTime(pkg.ExpireAt)
-			} else if pkg.ResetAt > 0 {
-				bucket.ResetTime = FormatUnixTime(pkg.ResetAt)
+			if agg.expireAt > 0 {
+				bucket.ResetTime = FormatUnixTime(agg.expireAt)
+			} else if agg.resetAt > 0 {
+				bucket.ResetTime = FormatUnixTime(agg.resetAt)
 			}
 			buckets = append(buckets, bucket)
 		}

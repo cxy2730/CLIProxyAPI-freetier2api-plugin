@@ -238,6 +238,7 @@ func (v *adapter) Quota(ctx context.Context, cred *core.Credential) (*pluginapi.
 	}
 	return &pluginapi.QuotaFetchResponse{
 		Subscription: &pluginapi.QuotaSubscription{Plan: "points", TierName: "小浣熊积分"},
+		// 同 AutoClaw：余额型只给剩余一枚 chip，总额由 auth.Totals 反推。
 		Summary: []pluginapi.QuotaMetric{
 			{Key: "credit_remain", Label: "可用积分", Value: float64(available), Format: "number"},
 		},

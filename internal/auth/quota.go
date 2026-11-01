@@ -94,6 +94,14 @@ func Totals(response *pluginapi.QuotaFetchResponse) QuotaTotals {
 		return QuotaTotals{}
 	}
 
+	// 取「第一个有容量的族」——顺序即语义，由供应商决定，这里不做大小比较。
+	//
+	// 注意两点，改动前先看：
+	//  1. total>0 而 remaining==0 的族**算有容量**。它是「额度合法地用完了」，
+	//     不是「没有这份权益」，不能因为后面还有别的桶就把它顶掉。
+	//  2. 因此供应商要负责把「真正代表账号可用额度」的桶排在前面：
+	//     已过期的桶（total=3000、remaining=0）若排在前面，页头会永远显示 0。
+	//     Qoder 的桶顺序由 vendors/qoder 的 orderedQuotaFamilies 决定。
 	chosen := families[0]
 	for _, family := range families {
 		if family.hasCapacity() {
@@ -101,9 +109,13 @@ func Totals(response *pluginapi.QuotaFetchResponse) QuotaTotals {
 			break
 		}
 	}
-	// 没有总额、但有已用量时反推：让「只报已用」的供应商也能显示比例。
+	// 没有 total 键时反推：total = remaining + used。
+	//
 	// 显式给出了 total=0 的族不反推——那是「没有这份权益」，不是「没给数」。
-	if !chosen.hasTotal && chosen.used > 0 {
+	// 但键根本不存在时必须反推，否则余额型供应商（只回一个「剩余积分」，
+	// 例如 AutoClaw / Raccoon / MiniMax）页头会显示成「24,199 / 0」，和
+	// 其它渠道的「剩余 / 总额」完全对不上。
+	if !chosen.hasTotal {
 		chosen.total = chosen.remaining + chosen.used
 	}
 	return QuotaTotals{Remaining: chosen.remaining, Total: chosen.total}
@@ -140,6 +152,11 @@ var quotaKeyRoles = map[string]struct {
 	"addon_quota_remaining": {"addon_quota", roleRemaining},
 	"addon_quota_total":     {"addon_quota", roleTotal},
 	"addon_quota_used":      {"addon_quota", roleUsed},
+	// org_quota 族：Qoder 企业/团队账号的「资源包」桶（订阅席位之外的额度）。
+	// 上游键名没有实测样本，由 vendors/qoder 按结构发现后统一用这个前缀输出。
+	"org_quota_remaining": {"org_quota", roleRemaining},
+	"org_quota_total":     {"org_quota", roleTotal},
+	"org_quota_used":      {"org_quota", roleUsed},
 	// token_plan 族：MiniMax Token Plan 的 token 余量。点数（default 族）与
 	// token 计划并存时各自成族，Totals 按「有容量者优先」取族，互不覆盖。
 	"token_remaining": {"token_plan", roleRemaining},

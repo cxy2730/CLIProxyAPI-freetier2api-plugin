@@ -1248,7 +1248,13 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
         } else {
           var checkinCell = el("td", checkin.last_date
             ? (checkin.last_date + (checkin.streak ? " · 连续 " + checkin.streak + " 天" : ""))
-            : "未签到");
+            : (checkin.provisional_date ? (checkin.provisional_date + " · 待复核") : "未签到"));
+          // 待复核：上游在北京时间 12 点前会对还没领到的账号回「已签到」，
+          // 此时不能显示成「已签到」，否则用户以为今天领过了。
+          if (!checkin.last_date && checkin.provisional_date) {
+            checkinCell.className = "warn";
+            checkinCell.title = "上游称今日已签到，但北京时间 12 点前上游会误报，后续排程会再确认";
+          }
           var history = account.checkin_history || [];
           if (history.length) {
             var historyBtn = el("button", "历史 " + history.length, "act");
@@ -1303,6 +1309,13 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
         var remainCell = el("td", quota.remain + " / " + (hasTotal ? quota.total : "—"));
         if (!hasTotal) {
           remainCell.title = "上游只提供可用余额，没有总额 / 已用概念";
+        }
+        // 本次刷新失败、显示的是上次成功读数：必须标出来，否则旧数字会被
+        // 当成实时值。上游限流/超时是常态，清空额度列反而让人分不清
+        // 「没额度了」和「这次没取到」。
+        if (quota.stale) {
+          remainCell.appendChild(el("span", " 非实时", "muted"));
+          remainCell.title = "本次刷新失败，显示上次读数：" + (quota.stale_reason || "原因未知");
         }
         row.appendChild(remainCell);
         var ratio = hasTotal ? (quota.remain / quota.total) : 0;

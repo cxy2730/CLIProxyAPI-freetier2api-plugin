@@ -129,6 +129,11 @@ func (s *Service) cacheQuotaResult(q quotaResult) {
 	}
 	s.quotaMu.Lock()
 	defer s.quotaMu.Unlock()
+	if s.quotaCache == nil {
+		// 惰性初始化：Service 由 New 构造时已建好，但零值 Service 直接调
+		// 这里会 panic 在 nil map 赋值上，防御一下不值得。
+		s.quotaCache = map[string]quotaResult{}
+	}
 	s.quotaCache[key] = q
 }
 
@@ -673,6 +678,6 @@ func runWithAuthRetry(
 	refresh func() *core.Credential,
 	action func(*core.Credential) (accountActionOutcome, error),
 ) (accountActionOutcome, error) {
-	outcome, _, errAction := withAuthRetry(credential, refresh, action)
+	outcome, _, errAction := core.WithAuthRetry(credential, refresh, action)
 	return outcome, errAction
 }
