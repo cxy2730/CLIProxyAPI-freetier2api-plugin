@@ -43,7 +43,15 @@ func FormatValue(value float64) string {
 // QuotaTotals 是「剩余 / 总额」的折算结果。
 type QuotaTotals struct {
 	Remaining int64
-	Total     int64
+	// Total 是上游报的总额；HasTotal 为 false 时它是 0，但语义是「上游没报」。
+	Total int64
+	// HasTotal 报告上游是否真的报了总额。
+	//
+	// 余额型供应商（AutoClaw / Raccoon / MiniMax 等）只回一个「剩余积分」，
+	// 没有总额键。这时不能反推 total = remaining + used：反推出来的数字既不是
+	// 上游口径，也会让「剩余 / 总额」两栏看起来像真的（用户拿它算百分比，算
+	// 出来的比例没有任何意义）。展示层据此显示「余额 / —」。
+	HasTotal bool
 	// Unlimited 报告剩余额度无上限（上游以 -1 / unit=unlimited 表达）。
 	// 无上限时 Remaining 没有意义，展示层应显示「无限」而不是数字。
 	Unlimited bool
@@ -55,11 +63,11 @@ type QuotaTotals struct {
 // **新增供应商必须复用其中一族**：这个函数只认白名单，写别的键名会静默
 // 得到 0/0，页面就会一直显示 0 / 0（Trae 曾用 remaining_credit 踩过）。
 //
-// 一个账号可能同时给出多个族（Qoder 的套餐额度 user_quota_*、加购额度
-// addon_quota_* 与组织资源包 org_package_*）。优先级按**是否真有容量**而不是
-// 出现顺序：套餐额度用尽（0/3000）时，还有余额的资源包必须接管显示，
-// 否则账号表会一直停在 0/3000。只有所有族都没有容量时才回落到第一个出现的
-// 族——那时 0/0 或 0/total 是真实语义（额度已用尽 / 未开通）。
+// 一个账号可能同时给出多个族（Qoder 的套餐额度 user_quota_* 与拓展包
+// addon_quota_*）。优先级按**是否真有容量**而不是出现顺序：Qoder Free 计划的
+// userQuota 是合法的 `{used:0,total:0,remaining:0}`，按出现顺序取会把整个
+// 账号锁死在 0/0，即使拓展包里还有额度。只有所有族都没有容量时才回落到
+// 第一个出现的族——那时 0/0 是真实语义（额度已用尽 / 未开通）。
 func Totals(response *pluginapi.QuotaFetchResponse) QuotaTotals {
 	if response == nil {
 		return QuotaTotals{}
@@ -94,6 +102,14 @@ func Totals(response *pluginapi.QuotaFetchResponse) QuotaTotals {
 		return QuotaTotals{}
 	}
 
+	// 取「第一个有容量的族」——顺序即语义，由供应商决定，这里不做大小比较。
+	//
+	// 注意两点，改动前先看：
+	//  1. total>0 而 remaining==0 的族**算有容量**。它是「额度合法地用完了」，
+	//     不是「没有这份权益」，不能因为后面还有别的桶就把它顶掉。
+	//  2. 因此供应商要负责把「真正代表账号可用额度」的桶排在前面：
+	//     已过期的桶（total=3000、remaining=0）若排在前面，页头会永远显示 0。
+	//     Qoder 的桶顺序由 vendors/qoder 的 orderedQuotaFamilies 决定。
 	chosen := families[0]
 	for _, family := range families {
 		if family.hasCapacity() {
@@ -101,12 +117,13 @@ func Totals(response *pluginapi.QuotaFetchResponse) QuotaTotals {
 			break
 		}
 	}
-	// 没有总额、但有已用量时反推：让「只报已用」的供应商也能显示比例。
-	// 显式给出了 total=0 的族不反推——那是「没有这份权益」，不是「没给数」。
-	if !chosen.hasTotal && chosen.used > 0 {
-		chosen.total = chosen.remaining + chosen.used
-	}
-	return QuotaTotals{Remaining: chosen.remaining, Total: chosen.total}
+	// 没有 total 键就如实报「没报」，不反推。
+	//
+	// 反推（total = remaining + used）能得到一个能看的数字，但它是我们算的，
+	// 不是上游的口径：余额型供应商的 used 往往是 0 或另一套计量，反推出来的
+	// 总额会让「剩余 / 总额」两栏看起来像真的，用户据此算百分比毫无意义。
+	// 展示层拿 HasTotal 决定显示「余额 / —」。
+	return QuotaTotals{Remaining: chosen.remaining, Total: chosen.total, HasTotal: chosen.hasTotal}
 }
 
 // quotaFamily 是同一族额度键（remaining / total / used）的汇总。
@@ -115,18 +132,9 @@ type quotaFamily struct {
 	hasRemaining, hasTotal bool
 }
 
-// hasCapacity 报告该族现在还有可用额度。
-//
-// remaining 是「还能不能用」的直接判据：显式 remaining=0 的族已经耗尽，
-// 即使 total>0 也不该挡住另一个还有余额的族——Qoder 套餐额度用尽、组织
-// 资源包仍有余额时，账号表必须显示后者，否则用户看到的是 0/3000，而实际
-// 还能继续用资源包。只报 total、不报 remaining 的供应商没有这个信号，
-// 退回按 total 判断。
+// hasCapacity 报告该族是否有真实额度（任一维度为正）。
 func (f quotaFamily) hasCapacity() bool {
-	if f.hasRemaining {
-		return f.remaining > 0
-	}
-	return f.hasTotal && f.total > 0
+	return (f.hasRemaining && f.remaining > 0) || (f.hasTotal && f.total > 0)
 }
 
 // quotaKeyRoles 是额度键的唯一词表：键 → (族, 角色)。
@@ -149,7 +157,14 @@ var quotaKeyRoles = map[string]struct {
 	"addon_quota_remaining": {"addon_quota", roleRemaining},
 	"addon_quota_total":     {"addon_quota", roleTotal},
 	"addon_quota_used":      {"addon_quota", roleUsed},
-	// org_package 族：Qoder 的组织共享资源包（国内版团队账号的「资源包」）。
+	// org_quota 族：Qoder 企业/团队账号的「资源包」桶（订阅席位之外的额度）。
+	// 上游键名没有实测样本，由 vendors/qoder 按结构发现后统一用这个前缀输出。
+	"org_quota_remaining": {"org_quota", roleRemaining},
+	"org_quota_total":     {"org_quota", roleTotal},
+	"org_quota_used":      {"org_quota", roleUsed},
+	// org_package 族：org_quota 的旧键名（issue #70 的修复用这个名字）。
+	// state.QuotaCache 会把上次成功的 Summary 快照落盘，旧快照里是这组键；
+	// 留着别名，读取失败回放旧读数时页头才不会退化成 0 / 0。
 	"org_package_remaining": {"org_package", roleRemaining},
 	"org_package_total":     {"org_package", roleTotal},
 	"org_package_used":      {"org_package", roleUsed},

@@ -166,10 +166,8 @@ func (v *adapter) fetchQuota(ctx context.Context, cred *Credential) (*pluginapi.
 
 	if reason := billingBlockReason(cred); reason != "" {
 		// 非 Coding Plan 账号：如实说明，不伪装成「查询成功但无数据」。
-		response.Summary = append(response.Summary, pluginapi.QuotaMetric{
-			Key: "status", Label: "账号状态", Value: 1, Unit: reason,
-		})
-		// 带上原因：页面据此在按钮上给出说明，而不是显示成「没有可领套餐」。
+		// 原因只走 Claim.Error：Summary 的每一项都会被渲染成「数字 + unit」，
+		// 把文本塞进 unit 会显示成「账号状态 | 1 <原因>」，既占位又难读。
 		response.Claim = &pluginapi.ClaimStatus{Error: reason}
 		return response, nil
 	}
@@ -187,27 +185,15 @@ func (v *adapter) fetchQuota(ctx context.Context, cred *Credential) (*pluginapi.
 	if len(snapshot.metrics) == 0 {
 		// 上游在活动额度生效前不会生成 balances 桶，只回空额度；但授予量已经
 		// 写在 plans[].entitlements 里。用授予明细兜底展示「剩余 / 总额」，
-		// 并注明生效时刻，页面不必等到生效那一刻才有数字。
-		note := "尚未领取体验套餐（Start Plan），领取后才有额度"
-		if metrics, groups, effectiveAt := planGrantQuota(snapshot.plans, snapshot.serverTime); len(metrics) > 0 {
+		// 页面不必等到生效那一刻才有数字。
+		//
+		// 「为什么没有额度」这句说明不在这里拼：它属于展示层，由 admin 依据
+		// 领取状态与额度明细统一生成（state.ClaimRecord.Note），供应商不必为
+		// 页面文案负责，宿主契约里也不该出现插件专用的说明字段。
+		if metrics, groups, _ := planGrantQuota(snapshot.plans, snapshot.serverTime); len(metrics) > 0 {
 			response.Summary = append(response.Summary, metrics...)
 			response.Groups = append(response.Groups, groups...)
-			note = "套餐已领取，额度尚未生效"
-			if effectiveAt > 0 {
-				note = "套餐已领取，额度 " + time.Unix(effectiveAt, 0).UTC().Format(time.RFC3339) + " 生效"
-			}
-		} else if plansEnded(snapshot.plans, snapshot.serverTime) {
-			// 只有「每个套餐的 ends_at 都已过去」才能说过期：授予为 0 且授予
-			// 时刻在未来的 pending 套餐同样没有可展示的授予，说成过期是错的。
-			note = "套餐已过期，无可用额度"
-		} else if len(snapshot.plans) > 0 {
-			// 领了但还没有可展示的授予（桶未生成 / 授予为 0 且生效在未来）：
-			// 说成「尚未领取」同样误导。
-			note = "套餐已领取，额度桶尚未生效"
 		}
-		response.Summary = append(response.Summary, pluginapi.QuotaMetric{
-			Key: "status", Label: "账号状态", Value: 1, Unit: note,
-		})
 	}
 	return response, nil
 }
@@ -293,20 +279,8 @@ func balanceQuota(balances []map[string]any) ([]pluginapi.QuotaMetric, []plugina
 			totalTotal += total
 			totalUsed += used
 		}
-		metrics = append(metrics, pluginapi.QuotaMetric{
-			Key:   "remaining_" + sanitizeMetricKey(name),
-			Label: name + " 剩余",
-			Value: remaining,
-			Unit:  "tokens",
-		})
-		if used > 0 {
-			metrics = append(metrics, pluginapi.QuotaMetric{
-				Key:   "used_" + sanitizeMetricKey(name),
-				Label: name + " 已用",
-				Value: used,
-				Unit:  "tokens",
-			})
-		}
+		// 逐模型余量只进 Groups 的进度条，不再往 Summary 塞一份：同一份额度
+		// 在面板上出现两次（chips + 进度条）正是「额度看着不对齐」的来源。
 
 		// 比例口径与 qoder 一致：有总额按比例，总额缺失但仍有余额时
 		// 视为满额（上游只给余额时不能画成 0%，那是「已用尽」的假象）。
@@ -336,13 +310,13 @@ func balanceQuota(balances []map[string]any) ([]pluginapi.QuotaMetric, []plugina
 	}
 	// default 族汇总放最前：账号表的「剩余 / 总额」靠这两个键算比例。
 	summary := []pluginapi.QuotaMetric{
-		{Key: "remaining", Label: "剩余", Value: totalRemaining, Unit: "tokens"},
+		{Key: "remaining", Label: "剩余额度", Value: totalRemaining},
 	}
 	if totalTotal > 0 {
-		summary = append(summary, pluginapi.QuotaMetric{Key: "total", Label: "总量", Value: totalTotal, Unit: "tokens"})
+		summary = append(summary, pluginapi.QuotaMetric{Key: "total", Label: "总额度", Value: totalTotal})
 	}
 	if totalUsed > 0 {
-		summary = append(summary, pluginapi.QuotaMetric{Key: "used", Label: "已用", Value: totalUsed, Unit: "tokens"})
+		summary = append(summary, pluginapi.QuotaMetric{Key: "used", Label: "已用额度", Value: totalUsed})
 	}
 	return append(summary, metrics...), []pluginapi.QuotaGroup{group}
 }
@@ -755,8 +729,8 @@ func planGrantQuota(plans []map[string]any, serverTime int64) ([]pluginapi.Quota
 		return nil, nil, 0
 	}
 	metrics := []pluginapi.QuotaMetric{
-		{Key: "remaining", Label: "剩余", Value: total, Unit: "tokens"},
-		{Key: "total", Label: "总量", Value: total, Unit: "tokens"},
+		{Key: "remaining", Label: "剩余额度", Value: total},
+		{Key: "total", Label: "总额度", Value: total},
 	}
 	return metrics, []pluginapi.QuotaGroup{group}, effectiveAt
 }
@@ -771,8 +745,8 @@ type grantCandidate struct {
 // 生效的。
 //
 // 只看 activePlans 不够：上游对「已领取、额度未生效」的套餐可能标成 pending，
-// 那样既取不到授予明细，状态文案还会说成「尚未领取体验套餐」，与事实相反。
-// 到期时间已过的条目仍然排除。生效时刻一并带出，避免调用方重复解析 entitlements。
+// 那样既取不到授予明细，额度又会显示成空。到期时间已过的条目仍然排除。
+// 生效时刻一并带出，避免调用方重复解析 entitlements。
 func grantCandidatePlans(plans []map[string]any, serverTime int64) []grantCandidate {
 	out := make([]grantCandidate, 0, len(plans))
 	for _, plan := range plans {
@@ -786,22 +760,6 @@ func grantCandidatePlans(plans []map[string]any, serverTime int64) []grantCandid
 		}
 	}
 	return out
-}
-
-// plansEnded 报告所有套餐都已按服务端时间到期。
-//
-// 没有 ends_at 或服务端时间未知时一律返回 false：宁可说「额度桶尚未生效」，
-// 也不要把「不知道」说成「过期」。
-func plansEnded(plans []map[string]any, serverTime int64) bool {
-	if len(plans) == 0 || serverTime <= 0 {
-		return false
-	}
-	for _, plan := range plans {
-		if endsAt := core.GetUnixSeconds(plan, "ends_at"); endsAt <= 0 || endsAt > serverTime {
-			return false
-		}
-	}
-	return true
 }
 
 // pendingEffectiveAt 返回套餐里最早一个「尚未生效」的 token 授予时刻（Unix 秒）；
@@ -1489,6 +1447,18 @@ func queryMarketingTouch(ctx context.Context, cred *Credential) ([]core.PlanInfo
 // 不按 starts_at/ends_at 二次过滤：上游已按当前时间筛选投放，本机时钟漂移只会
 // 误伤。这里返回的是「上游当前投放」，不是「本账号此刻可领」。
 func parseMarketingTouch(status int, raw []byte) ([]core.PlanInfo, error) {
+	// 200 + 空体是「本次没有投放」，不是错误。
+	//
+	// 上游营销网关在没有活动时会回 200 和零字节（或 204），原先直接
+	// json.Unmarshal 空串 → "unexpected end of JSON input" → 整个活动查询
+	// 被标成失败，页面显示查询出错，而真实情况是「今天没有可领活动」。
+	if status == http.StatusNoContent || len(bytes.TrimSpace(raw)) == 0 {
+		if status >= 400 {
+			return nil, core.NewPluginError("zcode_activity_http",
+				"营销活动接口返回 "+strconv.Itoa(status), http.StatusBadGateway)
+		}
+		return nil, nil
+	}
 	var payload map[string]any
 	if errUnmarshal := json.Unmarshal(raw, &payload); errUnmarshal != nil {
 		return nil, core.NewPluginError("zcode_activity_response",

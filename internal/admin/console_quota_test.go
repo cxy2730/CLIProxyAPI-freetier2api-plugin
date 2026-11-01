@@ -15,9 +15,9 @@ func TestConsolePageHidesMissingTotal(t *testing.T) {
 	page := Page("/plugins/freetier2api")
 
 	for _, literal := range []string{
-		"var hasTotal = quota.total > 0;",
-		"上游只提供可用余额",
-		// 没有总额时总额位必须是占位符而不是数字 0。
+		"var hasTotal = !!quota.has_total;",
+		"有的上游只报可用余额",
+		// 没有总额时总额位必须是占位符而不是数字 0；has_total 由后端给，前端不反推。
 		"quota.remain + \" / \" + (hasTotal ? quota.total : \"\u2014\")",
 	} {
 		if !strings.Contains(page, literal) {

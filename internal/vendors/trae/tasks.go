@@ -459,7 +459,9 @@ func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.Q
 
 	// 无限额度用 -1 / unit=unlimited 表达（auth.Totals 认这一对），既不能写
 	// 0（看起来像用光），也不能写 total-used。
-	remain, remainUnit := total-used, "credits"
+	// 普通数值不设 Unit：面板会把 unit 拼在数字后，填 "credits" 就是「1,100 credits」
+	// 中英混排；Label 里的「积分 / 额度」已经说明了计量口径。
+	remain, remainUnit := total-used, ""
 	if unlimited {
 		remain, remainUnit = -1, "unlimited"
 	}
@@ -475,8 +477,8 @@ func FetchQuota(ctx context.Context, cred *Credential, cfg Config) (*pluginapi.Q
 		},
 		Summary: []pluginapi.QuotaMetric{
 			{Key: "credit_remain", Label: "剩余积分", Value: remain, Unit: remainUnit},
-			{Key: "credit_total", Label: "总额度", Value: total, Unit: "credits"},
-			{Key: "credit_used", Label: "已用积分", Value: used, Unit: "credits"},
+			{Key: "credit_total", Label: "总额度", Value: total},
+			{Key: "credit_used", Label: "已用积分", Value: used},
 		},
 	}, nil
 }

@@ -18,6 +18,7 @@ import (
 
 	"freetier2api-plugin/cpasdk/pluginabi"
 	"freetier2api-plugin/cpasdk/pluginapi"
+	"freetier2api-plugin/internal/auth"
 	"freetier2api-plugin/internal/core"
 	"freetier2api-plugin/internal/hostbridge"
 	"freetier2api-plugin/internal/logger"
@@ -406,8 +407,9 @@ func (a *App) handleQuotaFetch(request []byte) ([]byte, error) {
 	ctx := hostbridge.WithCallbackID(context.Background(), "")
 	// 宿主的额度路由**不发 StorageJSON**（只发 AuthIndex/AuthID + 属性），
 	// 因此这里必须能按 index 回源，否则会误报「凭证缺失」。
+	authID := core.FirstNonEmpty(rpc.AuthIndex, rpc.AuthID)
 	credential, vendor, errResolve := a.resolveVendorCredential(ctx, "", rpc.StorageJSON,
-		core.FirstNonEmpty(rpc.AuthIndex, rpc.AuthID), rpc.Attributes)
+		authID, rpc.Attributes)
 	if errResolve != nil {
 		return nil, errResolve
 	}
@@ -416,11 +418,73 @@ func (a *App) handleQuotaFetch(request []byte) ([]byte, error) {
 	if !okQuota {
 		return nil, core.QuotaUnsupported(vendor)
 	}
-	response, errQuota := provider.Quota(ctx, credential)
+	// 与控制台额度面板走同一套重试：401 先保活刷新再重查，传输层故障等待后重查。
+	//
+	// 此前这里直接单发一次 provider.Quota()，于是 MiniMax（access token 只有
+	// 1 小时有效期）在宿主面板上会周期性挂 401，而同一时刻控制台刷新却是好的——
+	// 同一批上游、同一批凭证，两条路径的重试策略不该分裂。
+	response, errQuota := queryVendorQuota(ctx, credential, provider, func() *core.Credential {
+		return a.refreshedQuotaCredential(ctx, "", authID, vendor)
+	})
 	if errQuota != nil {
+		// 宿主契约里没有「这是上次的读数」这种表达（QuotaFetchResponse 不带
+		// stale 字段），所以这里不能拿旧值充新值——那会让宿主面板把过期的
+		// 数字当成实时值展示。要保留上次读数得先在宿主契约里落地这个语义；
+		// 在那之前，如实报错比给一个看不出过期的数字更安全。
+		//
+		// 「失败保留上次读数」只在插件自己的控制台里做（admin 侧有 Stale
+		// 字段，见 internal/admin/quota.go）。
 		return nil, core.ToPluginError(errQuota)
 	}
 	return core.OKEnvelope(response)
+}
+
+// queryVendorQuota 查一次额度：401 先刷新凭证再重查，传输层故障等待后重查。
+//
+// 抽成包级函数是为了让三种结局都能用假 vendor / 假 refresh 测到——换凭证后
+// 重试成功、刷新拿不到新凭证时保留 401、以及无错时只查一次。这三种结局决定
+// 宿主面板显示的是真额度还是错误（#71 第二轮复审 P2-5）。
+func queryVendorQuota(ctx context.Context, credential *core.Credential, provider core.QuotaProvider,
+	refresh func() *core.Credential) (*pluginapi.QuotaFetchResponse, error) {
+	return core.QueryWithRetry(ctx,
+		func(current *core.Credential) (*pluginapi.QuotaFetchResponse, error) {
+			return provider.Quota(ctx, current)
+		},
+		credential,
+		refresh,
+	)
+}
+
+// refreshedQuotaCredential 在额度查询遇到 401 时保活刷新一次凭证。
+//
+// 与控制台 admin.refreshedCredential 同源，实现见 auth.RefreshCredential。
+func (a *App) refreshedQuotaCredential(ctx context.Context, callbackID, authID string, vendor core.Vendor) *core.Credential {
+	if vendor == nil {
+		return nil
+	}
+	credential := auth.RefreshCredential(ctx, a.pool, callbackID, authID, vendor.ID(), a.Config().EnabledRealms,
+		func() {
+			if a.tasks != nil {
+				a.tasks.Keepalive(ctx, callbackID, []string{authID}, 1)
+			}
+		})
+	if credential == nil {
+		return nil
+	}
+	a.adoptRefreshedCredential(authID, credential)
+	return credential
+}
+
+// adoptRefreshedCredential 把刷新后的凭证回写回源缓存。
+//
+// 不回写的代价：宿主额度路由拿新 token 重试这一次是好的，但下一次请求仍走
+// credentialForAuth → 30 秒缓存，于是同一个旧 token 再撞一次 401。
+// 单独抽出来是为了这条不变式能被直接测到，而不必搭一个真实凭证池。
+func (a *App) adoptRefreshedCredential(authID string, credential *core.Credential) {
+	if credential == nil || strings.TrimSpace(authID) == "" {
+		return
+	}
+	a.storeCredential(authID, credential)
 }
 
 // handleQuotaReset 执行一次签到以恢复额度。

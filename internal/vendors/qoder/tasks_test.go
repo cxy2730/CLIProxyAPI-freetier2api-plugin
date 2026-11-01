@@ -719,10 +719,10 @@ func TestFetchQuotaReadsOrgResourcePackage(t *testing.T) {
 	if quota.OrgPackage.Total != 2000 || quota.OrgPackage.Remaining != 2000 {
 		t.Errorf("资源包 = %+v, 期望 cap 与 remaining 都是 2000", *quota.OrgPackage)
 	}
-	if got, ok := summaryValue(response.Summary, "org_package_remaining"); !ok || got != 2000 {
+	if got, ok := summaryValue(response.Summary, "org_quota_remaining"); !ok || got != 2000 {
 		t.Errorf("org_package_remaining = %v (存在=%v), 期望 2000", got, ok)
 	}
-	if got, ok := summaryValue(response.Summary, "org_package_total"); !ok || got != 2000 {
+	if got, ok := summaryValue(response.Summary, "org_quota_total"); !ok || got != 2000 {
 		t.Errorf("org_package_total = %v (存在=%v), 期望 2000", got, ok)
 	}
 	found := false
@@ -748,8 +748,8 @@ func TestFetchQuotaSkipsUnavailableOrgPackage(t *testing.T) {
 	if quota.OrgPackage != nil {
 		t.Fatalf("available=false 的资源包不应计入额度，得到 %+v", *quota.OrgPackage)
 	}
-	if _, ok := summaryValue(response.Summary, "org_package_remaining"); ok {
-		t.Error("available=false 的资源包不应输出 org_package_* 摘要")
+	if _, ok := summaryValue(response.Summary, "org_quota_remaining"); ok {
+		t.Error("available=false 的资源包不应输出 org_quota_* 摘要")
 	}
 }
 

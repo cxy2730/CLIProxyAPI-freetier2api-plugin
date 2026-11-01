@@ -13,6 +13,7 @@ package tests
 
 import (
 	"encoding/json"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -181,16 +182,25 @@ func TestResponseNormalizeBeforeIgnoresLargeRequestBodies(t *testing.T) {
 
 	// 两份请求体都是零字节，base64 后是重复的 "AAAA…"：命中扫描器的
 	// 字符串跳过路径，而不会被误当成字段值。
+	//
+	// 这里量的是**每次调用的分配字节**，不是分配次数：一次
+	// `make([]byte, len(body))` 只算 1 次分配，次数断言根本看不见它；而
+	// -race 的固定开销在字节尺度上可以忽略，字节断言反而更稳、更严。
 	allocated := func(raw []byte) float64 {
-		return testing.AllocsPerRun(20, func() {
+		return allocatedBytesPerRun(t, 20, func() {
 			if _, errHandle := testApp.HandleMethod(pluginabi.MethodResponseNormalizeBefore, raw); errHandle != nil {
 				t.Fatalf("normalize: %v", errHandle)
 			}
 		})
 	}
-	smallAllocs, largeAllocs := allocated(small), allocated(large)
-	if largeAllocs > smallAllocs {
-		t.Fatalf("allocations must not grow with request bodies: 1KiB=%.1f 4MiB=%.1f", smallAllocs, largeAllocs)
+	smallBytes, largeBytes := allocated(small), allocated(large)
+	// 容差取 8 KiB：常数开销（JSON 解码缓冲、信封拼接）只有几百字节，而任何
+	// 按请求体大小走的分支都会在 4 MiB 这一侧至少多出兆级分配（光 base64 解码
+	// 就是 3 MiB，再加一份副本）。64 KiB 的余量对 4 MiB 体量太宽——真有按体积
+	// 走的小块分配时抓不住（#71 第二轮复审 P2-10）。
+	const slack = 8 << 10
+	if growth := largeBytes - smallBytes; growth > slack {
+		t.Fatalf("每次调用的分配字节随请求体增长：1KiB=%.0f 4MiB=%.0f（+%.0f 字节，上限 %d）", smallBytes, largeBytes, growth, slack)
 	}
 
 	// 结果本身仍然正确：大请求体不影响信封补全。
@@ -251,4 +261,20 @@ func TestResponseNormalizeBeforeCompatWithExecutorChunks(t *testing.T) {
 			t.Fatalf("double data: prefix regressed (#5/#8): %q", body)
 		}
 	}
+}
+
+// allocatedBytesPerRun 返回 fn 每次调用平均分配的字节数。
+//
+// 先空跑一次做预热，避免把一次性初始化（缓冲池、map 扩容）算进稳态开销。
+func allocatedBytesPerRun(t *testing.T, runs int, fn func()) float64 {
+	t.Helper()
+	fn()
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	for index := 0; index < runs; index++ {
+		fn()
+	}
+	runtime.ReadMemStats(&after)
+	return float64(after.TotalAlloc-before.TotalAlloc) / float64(runs)
 }

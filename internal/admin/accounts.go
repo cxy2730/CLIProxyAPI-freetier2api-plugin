@@ -53,6 +53,21 @@ func (s *Service) buildStatusPayload(req pluginapi.ManagementRequest) map[string
 	}
 }
 
+// checkinFlags 从签到记录推出「今天已确认」与「今天待复核」。
+//
+// LastDate 与 ProvisionalDate 都只写不清（见 tasks/checkin.go），所以两者
+// 都必须与 today 比对，不能只看非空：历史上页面就是只看非空，导致凡是签过
+// 到的账号都判定不出「今天待复核」（#71 第二轮复审 P1-2）。
+func checkinFlags(record *state.CheckinRecord, today string) (confirmed bool, pending bool) {
+	if record == nil || today == "" {
+		return false, false
+	}
+	confirmed = record.LastDate == today
+	// 今天已确认就不算待复核，否则页面会在「今天已签到」的账号上挂黄色标记。
+	pending = record.ProvisionalDate == today && !confirmed
+	return confirmed, pending
+}
+
 // accountSummary 是账号概览条目（不含凭证）。
 type accountSummary struct {
 	AuthID    string `json:"auth_id"`
@@ -71,16 +86,23 @@ type accountSummary struct {
 	NativeLabel string `json:"native_label,omitempty"`
 	// Alias 是用户自定义别名；空表示未设置。页面据此决定是否跳过 API key
 	// 脱敏（别名是用户起的名字，不是凭证）。
-	Alias           string               `json:"alias,omitempty"`
-	VendorID        string               `json:"vendor_id"`
-	VendorName      string               `json:"vendor_name"`
-	Realm           string               `json:"realm"`
-	Status          string               `json:"status"`
-	Disabled        bool                 `json:"disabled"`
-	RefreshedAt     string               `json:"refreshed_at,omitempty"`
-	Checkin         *state.CheckinRecord `json:"checkin,omitempty"`
-	Quota           *quotaResult         `json:"quota,omitempty"`
-	SupportsCheckin bool                 `json:"supports_checkin"`
+	Alias       string               `json:"alias,omitempty"`
+	VendorID    string               `json:"vendor_id"`
+	VendorName  string               `json:"vendor_name"`
+	Realm       string               `json:"realm"`
+	Status      string               `json:"status"`
+	Disabled    bool                 `json:"disabled"`
+	RefreshedAt string               `json:"refreshed_at,omitempty"`
+	Checkin     *state.CheckinRecord `json:"checkin,omitempty"`
+	// CheckinToday 表示「今天已经确认签到成功」（Checkin.LastDate 就是今天）。
+	CheckinToday bool `json:"checkin_today"`
+	// CheckinPending 表示「上游称今天已签到，但还没过可信时刻，需要复核」。
+	//
+	// 这两个结论只能由后端给：LastDate / ProvisionalDate 都只写不清，历史
+	// 账号恒非空，前端拿它们和今天比永远得不出正确结论（#71 第二轮复审 P1-2）。
+	CheckinPending  bool         `json:"checkin_pending"`
+	Quota           *quotaResult `json:"quota,omitempty"`
+	SupportsCheckin bool         `json:"supports_checkin"`
 	// SupportsQuota 是「该供应商能否查出额度」的静态能力，与 Quota（查询结果）
 	// 是两件事：没有结果时它区分「还没查」与「永远查不出来」。
 	SupportsQuota bool `json:"supports_quota"`
@@ -129,11 +151,19 @@ func (s *Service) cacheQuotaResult(q quotaResult) {
 	}
 	s.quotaMu.Lock()
 	defer s.quotaMu.Unlock()
+	if s.quotaCache == nil {
+		// 惰性初始化：Service 由 New 构造时已建好，但零值 Service 直接调这里
+		// 会 panic 在 nil map 赋值上。防御成本只是一次 nil 判断，值得。
+		s.quotaCache = map[string]quotaResult{}
+	}
 	s.quotaCache[key] = q
 }
 
 func (s *Service) listAccountSummaries(ctx context.Context, callbackID string) []accountSummary {
 	current := s.deps.State()
+	// today 在循环外取一次：每账号调一次 Today() 会重复格式化时间，且同一批
+	// 账号可能跨零点算出不同的「今天」。
+	today := s.tasks.Today()
 	loaded, failures := s.pool.Load(ctx, callbackID, auth.Options{IncludeDisabled: true})
 	for _, failure := range failures {
 		logger.Debug("skip account %s: %s", core.FirstNonEmpty(failure.Entry.Name, failure.Entry.ID), failure.Message)
@@ -177,6 +207,14 @@ func (s *Service) listAccountSummaries(ctx context.Context, callbackID string) [
 			summary.Checkin = &record
 		} else if record, okLegacy := lookupLegacyCheckin(current, credential); okLegacy {
 			summary.Checkin = &record
+		}
+		if summary.Checkin != nil {
+			// 「今天是否已确认签到」「今天是否待复核」由后端判定。
+			//
+			// LastDate 只写不清（见 tasks/checkin.go），凡是签过到的账号它恒
+			// 非空，前端拿它和今天比会让待复核标记永远不出现（#71 第二轮复审
+			// P1-2）。判定逻辑抽成 checkinFlags 以便单测。
+			summary.CheckinToday, summary.CheckinPending = checkinFlags(summary.Checkin, today)
 		}
 		summary.CheckinHistory = current.CheckinHistory[state.CheckinHistoryKey(vendor.ID(), uid)]
 		if record, okRecord := current.Claim[uid]; okRecord {
@@ -673,6 +711,6 @@ func runWithAuthRetry(
 	refresh func() *core.Credential,
 	action func(*core.Credential) (accountActionOutcome, error),
 ) (accountActionOutcome, error) {
-	outcome, _, errAction := withAuthRetry(credential, refresh, action)
+	outcome, _, errAction := core.WithAuthRetry(credential, refresh, action)
 	return outcome, errAction
 }

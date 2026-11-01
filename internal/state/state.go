@@ -39,6 +39,14 @@ type CheckinRecord struct {
 	Streak   int64  `json:"streak,omitempty"`
 	Credit   int64  `json:"credit,omitempty"`
 	Energy   int64  `json:"energy,omitempty"`
+	// ProvisionalDate 是「上游声称今日已签到、但还没到可信时刻」的日期。
+	//
+	// 上游在每日零点刚过的几十分钟里会对**尚未领到**的账号返回「已签到」
+	// （magpie #3326 实测：北京 00:00:28 六家渠道集体误报，10:54 才真领到，
+	// 29 个账号中 14 个）。若此时就写 LastDate，页面会显示假性成功，用户
+	// 以为今天领过了。这里只记一笔「待复核」，LastDate 留空，等过了可信
+	// 时刻再问一次；那时若仍是「已签到」，才认为当天确实领到了。
+	ProvisionalDate string `json:"provisional_date,omitempty"`
 }
 
 // DefaultCheckinHistoryLimit 是每个账号默认保留的签到历史条数。
@@ -81,6 +89,15 @@ func CheckinHistoryKey(vendorID, accountID string) string {
 // 同一份形状，供应商改字段时这里不用跟着改。
 type ClaimRecord struct {
 	pluginapi.ClaimStatus
+	// Note 是给页面看的说明，不是失败原因。
+	//
+	// 例如「已领取，上游暂未返回额度明细」「有可领取的套餐，领取后才会生成
+	// 额度」。这类文案既不是错误，也不影响能否点击领取；塞进 Error 会让页面
+	// 把「已领取」的账号显示成「可以再领一次」。
+	//
+	// 它是插件自有字段，不进宿主契约（ClaimStatus 是宿主的）：说明文案是
+	// 展示层的事，宿主不需要知道。
+	Note string `json:"note,omitempty"`
 	// CheckedAt 是本次探测时间（RFC3339），页面据此显示「多久前查的」。
 	CheckedAt string `json:"checked_at,omitempty"`
 }

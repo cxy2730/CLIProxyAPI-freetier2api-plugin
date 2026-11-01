@@ -24,7 +24,7 @@ func TestTotalsRecognizesEveryVendorKeyFamily(t *testing.T) {
 				{Key: "total", Value: 100},
 				{Key: "used", Value: 20},
 			},
-			want: QuotaTotals{Remaining: 80, Total: 100},
+			want: QuotaTotals{Remaining: 80, Total: 100, HasTotal: true},
 		},
 		{
 			name: "credit_* 族（WorkBuddy / Trae）",
@@ -33,7 +33,25 @@ func TestTotalsRecognizesEveryVendorKeyFamily(t *testing.T) {
 				{Key: "credit_total", Value: 4800},
 				{Key: "credit_used", Value: 5.19},
 			},
-			want: QuotaTotals{Remaining: 4794, Total: 4800},
+			want: QuotaTotals{Remaining: 4794, Total: 4800, HasTotal: true},
+		},
+		{
+			name: "org_quota_* 族（Qoder 组织资源包）",
+			summary: []pluginapi.QuotaMetric{
+				{Key: "org_quota_remaining", Value: 2000},
+				{Key: "org_quota_total", Value: 2000},
+				{Key: "org_quota_used", Value: 0},
+			},
+			want: QuotaTotals{Remaining: 2000, Total: 2000, HasTotal: true},
+		},
+		{
+			name: "org_package_* 族（兼容旧快照键名）",
+			summary: []pluginapi.QuotaMetric{
+				{Key: "org_package_remaining", Value: 2000},
+				{Key: "org_package_total", Value: 2000},
+				{Key: "org_package_used", Value: 0},
+			},
+			want: QuotaTotals{Remaining: 2000, Total: 2000, HasTotal: true},
 		},
 		{
 			name: "quota_* 族（Qoder）",
@@ -43,49 +61,27 @@ func TestTotalsRecognizesEveryVendorKeyFamily(t *testing.T) {
 				{Key: "addon_quota_remaining", Value: 50},
 				{Key: "addon_quota_total", Value: 100},
 			},
-			want: QuotaTotals{Remaining: 900, Total: 1000},
+			want: QuotaTotals{Remaining: 900, Total: 1000, HasTotal: true},
 		},
 		{
-			name: "只有已用、没有总额时反推",
+			// 反推出来的总额是我们算的，不是上游口径；如实报 HasTotal=false，
+			// 让展示层显示「余额 / —」。
+			name: "只有已用、没有总额时不反推",
 			summary: []pluginapi.QuotaMetric{
 				{Key: "credit_remain", Value: 80},
 				{Key: "credit_used", Value: 20},
 			},
-			want: QuotaTotals{Remaining: 80, Total: 100},
+			want: QuotaTotals{Remaining: 80, Total: 0},
 		},
 		{
-			name: "org_package_* 族（Qoder 组织资源包）",
-			summary: []pluginapi.QuotaMetric{
-				{Key: "org_package_remaining", Value: 2000},
-				{Key: "org_package_total", Value: 2000},
-				{Key: "org_package_used", Value: 0},
-			},
-			want: QuotaTotals{Remaining: 2000, Total: 2000},
-		},
-		{
-			// issue #70：国内版团队账号的套餐席位用尽（0/3000），组织资源包
-			// 还有 2000。按「出现顺序」或「total>0 就算有容量」都会锁死在
-			// 0/3000，账号于是被当成没额度。
-			name: "套餐额度用尽时让位给仍有余量的组织资源包（Qoder CN #70）",
+			name: "合法零额度不被后续额度族覆盖",
 			summary: []pluginapi.QuotaMetric{
 				{Key: "user_quota_remaining", Value: 0},
-				{Key: "user_quota_total", Value: 3000},
-				{Key: "user_quota_used", Value: 3000},
-				{Key: "org_package_remaining", Value: 2000},
-				{Key: "org_package_total", Value: 2000},
-				{Key: "org_package_used", Value: 0},
-			},
-			want: QuotaTotals{Remaining: 2000, Total: 2000},
-		},
-		{
-			// 显式 0 是真实值而非缺失：只有一个族时报 0/100 就展示 0/100，
-			// 既不退化成 0/0，也不从 used 反推。
-			name: "唯一的族显式报 0/100 时如实展示",
-			summary: []pluginapi.QuotaMetric{
-				{Key: "user_quota_remaining", Value: 0},
+				{Key: "addon_quota_remaining", Value: 50},
 				{Key: "user_quota_total", Value: 100},
+				{Key: "addon_quota_total", Value: 200},
 			},
-			want: QuotaTotals{Remaining: 0, Total: 100},
+			want: QuotaTotals{Remaining: 0, Total: 100, HasTotal: true},
 		},
 		{
 			// Qoder Free 计划：套餐额度是合法的 {used:0,total:0,remaining:0}，
@@ -99,7 +95,7 @@ func TestTotalsRecognizesEveryVendorKeyFamily(t *testing.T) {
 				{Key: "addon_quota_total", Value: 200},
 				{Key: "addon_quota_used", Value: 150},
 			},
-			want: QuotaTotals{Remaining: 50, Total: 200},
+			want: QuotaTotals{Remaining: 50, Total: 200, HasTotal: true},
 		},
 		{
 			name: "所有族都是 0/0 时保留第一个族（额度已用尽 / 未开通）",
@@ -109,7 +105,7 @@ func TestTotalsRecognizesEveryVendorKeyFamily(t *testing.T) {
 				{Key: "addon_quota_remaining", Value: 0},
 				{Key: "addon_quota_total", Value: 0},
 			},
-			want: QuotaTotals{Remaining: 0, Total: 0},
+			want: QuotaTotals{Remaining: 0, Total: 0, HasTotal: true},
 		},
 		{
 			name: "只给了 total=0 时不从 used 反推（presence 决定，非数值）",
@@ -118,7 +114,7 @@ func TestTotalsRecognizesEveryVendorKeyFamily(t *testing.T) {
 				{Key: "credit_total", Value: 0},
 				{Key: "credit_used", Value: 20},
 			},
-			want: QuotaTotals{Remaining: 0, Total: 0},
+			want: QuotaTotals{Remaining: 0, Total: 0, HasTotal: true},
 		},
 		{
 			name: "无限额度（Trae 用 -1 / unlimited 表达）",

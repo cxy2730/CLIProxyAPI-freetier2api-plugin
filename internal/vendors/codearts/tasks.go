@@ -619,12 +619,14 @@ func FetchQuota(ctx context.Context, cred *Credential) (*pluginapi.QuotaFetchRes
 			TierName: core.FirstNonEmpty(balance.Channel, "benefit"),
 			TierID:   "benefit",
 		},
+		// 顺序固定「剩余 → 总量 → 已用」，与其它渠道一致；宿主页头取首个有容量的
+		// 族，把总量排前面会让同一排 chips 的阅读顺序和别家相反。
 		Summary: []pluginapi.QuotaMetric{
-			{Key: "total", Label: "每日免费额度", Value: float64(balance.DailyTokenLimit)},
 			{Key: "remaining", Label: "今日剩余", Value: float64(dailyLeft)},
+			{Key: "total", Label: "每日免费额度", Value: float64(balance.DailyTokenLimit)},
 			{Key: "used", Label: "今日已用", Value: float64(balance.DailyTokensUsed)},
-			{Key: "benefit_monthly_total", Label: "每月额度", Value: float64(balance.MonthlyTokenLimit)},
 			{Key: "benefit_monthly_remaining", Label: "本月剩余", Value: float64(monthlyLeft)},
+			{Key: "benefit_monthly_total", Label: "每月额度", Value: float64(balance.MonthlyTokenLimit)},
 		},
 	}, nil
 }
@@ -687,8 +689,8 @@ func creditQuota(info *accountInfo) (*pluginapi.QuotaFetchResponse, bool) {
 			TierID:   core.FirstNonEmpty(info.Package.SpecCode, "credit"),
 		},
 		Summary: []pluginapi.QuotaMetric{
-			{Key: "total", Label: "积分总额", Value: totalAmount},
 			{Key: "remaining", Label: "剩余积分", Value: totalRemain},
+			{Key: "total", Label: "积分总额", Value: totalAmount},
 			{Key: "used", Label: "已用积分", Value: totalUsed},
 		},
 	}
@@ -711,9 +713,12 @@ func noCreditQuota(info *accountInfo) *pluginapi.QuotaFetchResponse {
 	}
 	return &pluginapi.QuotaFetchResponse{
 		Subscription: &pluginapi.QuotaSubscription{Plan: "CodeArts 积分", TierName: tierName, TierID: specCode},
+		// 上游没返回指标时仍要给出 total / remaining / used 三个键：宿主页头
+		// 靠它们折算总额，键缺失会让整张卡变成「暂无额度数据」。Label 里保留
+		// 原因说明，用户才知道 0 是「没开通」而不是「查询坏了」。
 		Summary: []pluginapi.QuotaMetric{
-			{Key: "total", Label: "积分总额（上游未返回积分指标）", Value: 0},
 			{Key: "remaining", Label: "剩余积分", Value: 0},
+			{Key: "total", Label: "积分总额（上游未返回积分指标）", Value: 0},
 			{Key: "used", Label: "已用积分", Value: 0},
 		},
 	}
@@ -727,6 +732,7 @@ func noBenefitQuota() *pluginapi.QuotaFetchResponse {
 			TierName: "未开通",
 			TierID:   "benefit",
 		},
+		// 同上：total 键必须在，否则控制台折算不出总额；标签说明原因。
 		Summary: []pluginapi.QuotaMetric{
 			{Key: "total", Label: "每日免费额度（上游未开通福利权益，无可查额度）", Value: 0},
 		},

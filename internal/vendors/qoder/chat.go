@@ -843,11 +843,9 @@ func (c *BearerClient) callGet(ctx context.Context, fullURL string) (map[string]
 	if resp.StatusCode != 200 {
 		return nil, NewUpstreamError(resp.StatusCode, string(data))
 	}
-	preview := string(data)
-	if len(preview) > 2000 {
-		preview = preview[:2000]
-	}
-	logger.Info("callGet %s response (%d bytes): %s", fullURL, len(data), preview)
+	// 成功响应只记长度：model/list 一次能回 40KB+，原样打 2000 字到 INFO
+	// 会让日志在每次目录刷新时膨胀几 KB，真正有用的错误行被埋掉。
+	logger.Debug("callGet %s response (%d bytes)", fullURL, len(data))
 	var result map[string]interface{}
 	err = json.Unmarshal(data, &result)
 	return result, err

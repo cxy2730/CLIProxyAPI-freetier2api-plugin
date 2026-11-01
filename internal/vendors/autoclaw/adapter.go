@@ -272,6 +272,9 @@ func (v *adapter) Quota(ctx context.Context, cred *core.Credential) (*pluginapi.
 			Plan:     string(v.region),
 			TierName: VendorNameFor(v.region),
 		},
+		// 余额型额度：上游只回一个可用余额，没有「总额度」概念，所以这里
+		// 只放一枚 chip。页头的「剩余 / 总额」由 auth.Totals 反推
+		// （total = remaining + used），不要在这里编一个假的总额。
 		Summary: []pluginapi.QuotaMetric{
 			{Key: "credit_remain", Label: "剩余积分", Value: balance.TotalBalance, Format: "number"},
 		},

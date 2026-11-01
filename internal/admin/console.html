@@ -1246,9 +1246,29 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
         if (!supportsCheckin) {
           row.appendChild(el("td", "无签到活动", "muted"));
         } else {
-          var checkinCell = el("td", checkin.last_date
-            ? (checkin.last_date + (checkin.streak ? " · 连续 " + checkin.streak + " 天" : ""))
-            : "未签到");
+          // 今日待复核由后端判定并下发布尔值，前端不自己拼。
+          //
+          // 曾经在前端用「last_date 为空 && provisional_date 是今天」判断，
+          // 但 last_date 只写不清，凡是签过到的账号都恒非空 → 条件永假，
+          // 待复核标记在真实账号上一次都不会出现（见 #71 第二轮复审）。
+          var pendingToday = !!account.checkin_pending;
+          // checkin_today 是后端按「last_date 是否等于今天」算出来的布尔。
+          // 用来把「今天签过了」和「上次签到是前几天」在颜色上分开：last_date
+          // 只写不清，光看日期串看不出今天到底签没签。
+          var confirmedToday = !!account.checkin_today;
+          var checkinCell = el("td", pendingToday
+            ? "待复核"
+            : (checkin.last_date
+              ? (checkin.last_date + (checkin.streak ? " · 连续 " + checkin.streak + " 天" : ""))
+              : "未签到"),
+            (!pendingToday && checkin.last_date && !confirmedToday) ? "muted" : null);
+          // 待复核：上游在北京时间 12 点前会对还没领到的账号回「已签到」，
+          // 此时不能显示成「已签到」，否则用户以为今天领过了。
+          if (pendingToday) {
+            checkinCell.className = "warn";
+            checkinCell.title = "上游称今日已签到，但北京时间 12 点前上游会误报，后续排程会再确认" +
+              (checkin.last_date ? "；上次确认签到：" + checkin.last_date : "");
+          }
           var history = account.checkin_history || [];
           if (history.length) {
             var historyBtn = el("button", "历史 " + history.length, "act");
@@ -1296,18 +1316,35 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
         row.appendChild(el("td", "无限"));
         row.appendChild(el("td", "—", "muted"));
       } else {
-        // total=0 不等于「额度用尽」：有的上游只报可用余额（AutoClaw 的积分
-        // 钱包只有 balance，没有总额/已用）。把 0 当总额会拼出「10000 / 0」
-        // 再配一条红色 0% 空槽，既错又误导；此时按「余额 / —」展示，比例留空。
-        var hasTotal = quota.total > 0;
+        // has_total 由后端按「上游是否真的报了总额」给出，前端不靠 total>0 反推：
+        // 有的上游只报可用余额（AutoClaw 的积分钱包只有 balance），把 0 当总额
+        // 会拼出「10000 / 0」再配一条红色 0% 空槽，既错又误导。此时按
+        // 「余额 / —」展示，比例留空。
+        var hasTotal = !!quota.has_total;
         var remainCell = el("td", quota.remain + " / " + (hasTotal ? quota.total : "—"));
         if (!hasTotal) {
           remainCell.title = "上游只提供可用余额，没有总额 / 已用概念";
+        } else if (!(quota.total > 0)) {
+          remainCell.title = "上游报了总额但它是 0，算不出剩余比例";
+        }
+        // 本次刷新失败、显示的是上次成功读数：必须标出来，否则旧数字会被
+        // 当成实时值。上游限流/超时是常态，清空额度列反而让人分不清
+        // 「没额度了」和「这次没取到」。
+        if (quota.stale) {
+          remainCell.appendChild(el("span", " 非实时", "muted"));
+          remainCell.title = "本次刷新失败，显示上次读数" +
+            (quota.fetched_at ? "（取于 " + quota.fetched_at.slice(0, 19).replace("T", " ") + "）" : "") +
+            "：" + (quota.stale_reason || "原因未知");
         }
         row.appendChild(remainCell);
-        var ratio = hasTotal ? (quota.remain / quota.total) : 0;
+        // 分母守卫：has_total 只说明上游报了总额键，不保证它大于 0。
+        // CodeArts 未开通福利、Qoder 的 0/0 桶都会给出 total=0。此时既不能
+        // 相除（NaN%），也不能按 0% 画一条红色空槽——红槽读起来像「额度已经
+        // 用光」，而事实是「没有可用的总额」（见 #71 第二轮复审 P1-1）。
+        var ratioKnown = hasTotal && quota.total > 0;
+        var ratio = ratioKnown ? (quota.remain / quota.total) : 0;
         var barCell = el("td");
-        if (hasTotal) {
+        if (ratioKnown) {
           // 阈值着色：剩余 >=50% 绿 / 20~50% 琥珀 / <20% 红（该列显示的即剩余比例）。
           var bar = el("span", null, ratio >= 0.5 ? "bar" : (ratio >= 0.2 ? "bar warn" : "bar err"));
           var fill = el("i");
@@ -1315,7 +1352,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
           bar.appendChild(fill);
           barCell.appendChild(bar);
         }
-        barCell.appendChild(el("span", hasTotal ? Math.round(ratio * 100) + "%" : "—", "muted"));
+        barCell.appendChild(el("span", ratioKnown ? Math.round(ratio * 100) + "%" : "—", "muted"));
         row.appendChild(barCell);
       }
 
@@ -1516,13 +1553,17 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   function claimButtonSpec(account) {
     if (!account.supports_claim) return null;
     var claim = account.claim || {};
+    // error 只表示取数失败（上游挂了 / 鉴权失效），按钮要能点重试；
+    // note 是说明（如「额度 11-02 生效」），不改变按钮状态。
     if (claim.error) return { text: "套餐领取", disabled: false, title: claim.error };
     // 未检测过（初次加载）或有待领套餐
     if (!claim.checked_at || claim.claimable > 0) {
-      return { text: "套餐领取", disabled: false, title: claim.claimable ? (claim.claimable + " 个套餐可领") : "点击查询可领套餐" };
+      // 可领数量比说明更有用：说明只解释「为什么现在没有额度」，不该盖掉
+      // 「有 N 个套餐可领」这个可操作信息。
+      return { text: "套餐领取", disabled: false, title: claim.claimable ? (claim.claimable + " 个套餐可领") : (claim.note || "点击查询可领套餐") };
     }
     // 已全部领取
-    return { text: "已领取", disabled: true, title: "已领取当前全部套餐" };
+    return { text: "已领取", disabled: true, title: claim.note || "已领取当前全部套餐" };
   }
 
   // openClaimModal 打开领取弹窗并实时拉取可领套餐。

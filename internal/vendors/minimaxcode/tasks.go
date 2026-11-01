@@ -223,20 +223,21 @@ func opSummaryMetrics(coreMap map[string]any) []pluginapi.QuotaMetric {
 		}
 	}
 
+	// Unit 留空：面板把 unit 直接拼在数字后，填「点」会渲染成「1,200 点」，
+	// 与其它渠道的裸数字不齐。计量单位由 Label 承担。
 	metrics := []pluginapi.QuotaMetric{{
 		Key:   "remaining",
 		Label: "总剩余额度",
 		Value: totalRemaining,
-		Unit:  "点",
 	}}
 	if freeRemaining > 0 {
 		metrics = append(metrics, pluginapi.QuotaMetric{
-			Key: "free", Label: "免费额度", Value: freeRemaining, Unit: "点",
+			Key: "free", Label: "免费额度", Value: freeRemaining,
 		})
 	}
 	if purchasedRemaining > 0 {
 		metrics = append(metrics, pluginapi.QuotaMetric{
-			Key: "purchased", Label: "付费额度", Value: purchasedRemaining, Unit: "点",
+			Key: "purchased", Label: "付费额度", Value: purchasedRemaining,
 		})
 	}
 	return metrics
@@ -282,7 +283,6 @@ func extractTokenPlanHead(coreMap map[string]any) *tokenPlanHead {
 			Key:   "token_remaining",
 			Label: "Token Plan 剩余",
 			Value: remains,
-			Unit:  "tokens",
 		})
 	}
 	return info

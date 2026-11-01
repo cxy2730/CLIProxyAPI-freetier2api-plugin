@@ -34,6 +34,19 @@ const (
 	checkinStatusError   = "error"
 )
 
+// checkinSureHour 是「上游的『已签到』回答开始可信」的北京小时数。
+//
+// 上游在每日零点刚过的几十分钟里会对**尚未领到**的账号返回「已签到」：
+// magpie 在 00:00:28 实测 AutoClaw CN、WorkBuddy、CodeArts、Trae CN、
+// MiniMax、Raccoon 六家集体误报，同一批账号到 10:54 才真正领到，29 个
+// 账号里 14 个中招（#3326）。原因是上游按自然日重置状态，而当日额度包
+// 尚未生成，接口就把「查不到今日领取记录」解释成「已经领过了」。
+//
+// 12 点是 magpie 选定的分界：到这个时刻当日额度包一定已经就绪，此时的
+// 「已签到」才代表真的领到了。取 12 而不是 10，是因为 magpie 的复现记录
+// 里 10:54 仍有账号处于未领状态。
+const checkinSureHour = 12
+
 // Checkin 执行一次签到，并记录最近一次结果与滚动历史。
 //
 // 返回值原样透传供应商结果与错误，调用方按自己的语义决定如何展示；
@@ -124,7 +137,8 @@ func (s *Service) recordCheckinResult(vendor core.Vendor, credential *core.Crede
 		return
 	}
 	uid := credential.FileIDValue()
-	entry := s.checkinEntry(trigger, checkinResultStatus(result), result.Message, result.Credit)
+	provisional := s.checkinProvisional(result)
+	entry := s.checkinEntry(trigger, checkinResultStatus(result), checkinResultMessage(result, provisional), result.Credit)
 	today := s.todayString()
 	limit := s.checkinHistoryLimit()
 	// 活跃信标按天幂等：本地记一笔「今天报过了」，供后续排程点去重。
@@ -135,29 +149,66 @@ func (s *Service) recordCheckinResult(vendor core.Vendor, credential *core.Crede
 		// 而上游窗口错过不补领——用户以为领到了，实际积分永远拿不到。
 		if !result.NotRecorded {
 			record := current.Checkin[uid]
-			record.LastDate = today
-			if result.Credit > 0 {
-				record.Credit = result.Credit
-			}
-			if result.Energy > 0 {
-				record.Energy = result.Energy
-			}
-			// 连签天数由供应商透传；上游没给（0）时保留上一次的值，
-			// 不能用「今天没返回」把已有天数清成 0。
-			if result.Streak > 0 {
-				record.Streak = result.Streak
+			if provisional {
+				// 可信时刻之前收到的「已签到」只记一笔待复核，不动 LastDate：
+				// 上游此时对还没领到的账号也会回「已签到」（见 checkinSureHour），
+				// 写 LastDate 等于把误报固化成「今天领过了」。
+				record.ProvisionalDate = today
+			} else {
+				record.LastDate = today
+				record.ProvisionalDate = ""
+				if result.Credit > 0 {
+					record.Credit = result.Credit
+				}
+				if result.Energy > 0 {
+					record.Energy = result.Energy
+				}
+				// 连签天数由供应商透传；上游没给（0）时保留上一次的值，
+				// 不能用「今天没返回」把已有天数清成 0。
+				if result.Streak > 0 {
+					record.Streak = result.Streak
+				}
+				// 活跃信标按天幂等，本地记一笔「今天报过了」，供后续排程点去重。
+				// 待复核结果不算报过：那一笔额度还没到账，报信标会让后续
+				// 排程点误以为今天已经走完。
+				if beacon {
+					if current.DailyBonusSent == nil {
+						current.DailyBonusSent = map[string]string{}
+					}
+					current.DailyBonusSent[key] = today
+				}
 			}
 			current.Checkin[uid] = record
-			// 活跃信标按天幂等，本地记一笔「今天报过了」，供后续排程点去重。
-			if beacon {
-				if current.DailyBonusSent == nil {
-					current.DailyBonusSent = map[string]string{}
-				}
-				current.DailyBonusSent[key] = today
-			}
 		}
 		pushCheckinHistory(current, key, entry, limit)
 	})
+}
+
+// checkinProvisional 报告本次「已签到」是否落在上游不可信的时段。
+//
+// 只有 Already 需要复核：真领到（Credit > 0）与明确失败都不受影响。
+func (s *Service) checkinProvisional(result *core.CheckinResult) bool {
+	if result == nil || !result.Already {
+		return false
+	}
+	return s.deps.Now().In(checkinZone).Hour() < checkinSureHour
+}
+
+// checkinResultMessage 在待复核结果上追加一句说明。
+//
+// 页面与历史都读这条 message，用户需要知道「已签到」为什么还没记成今天。
+func checkinResultMessage(result *core.CheckinResult, provisional bool) string {
+	if result == nil {
+		return ""
+	}
+	if !provisional {
+		return result.Message
+	}
+	const note = "上游称今日已签到，但北京时间 12 点前上游会误报，将在后续排程复核"
+	if result.Message == "" {
+		return note
+	}
+	return result.Message + "（" + note + "）"
 }
 
 // recordCheckinFailure 记录一次拿不到结果的失败（供应商报错 / 未返回结果）。
@@ -222,3 +273,10 @@ var checkinZone = time.FixedZone("UTC+8", 8*60*60)
 
 // todayString 返回签到日键（UTC+8）。
 func (s *Service) todayString() string { return s.deps.Now().In(checkinZone).Format("2006-01-02") }
+
+// Today 返回签到口径的「今天」（北京时间 YYYY-MM-DD）。
+//
+// 控制台判断「待复核」是否属于今天时用它：provisional_date 是历史值，写进去
+// 之后不会自己清掉，只有与今天相等才该显示成「待复核」，否则上周那次待复核
+// 会一直挂着，用户天天看到一个永远不会消失的黄色标记。
+func (s *Service) Today() string { return s.todayString() }
