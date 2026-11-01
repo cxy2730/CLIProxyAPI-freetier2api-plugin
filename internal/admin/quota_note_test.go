@@ -21,7 +21,7 @@ func TestClaimNoteExplainsEmptyQuota(t *testing.T) {
 	if note == "" {
 		t.Fatal("已领取但没有额度明细时应当给一句说明")
 	}
-	if note != "已领取，上游暂未返回额度明细；活动额度通常要几分钟才生效" {
+	if note != "已领取，上游暂未返回额度明细" {
 		t.Fatalf("说明文案变了：%q", note)
 	}
 }

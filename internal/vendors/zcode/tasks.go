@@ -190,7 +190,7 @@ func (v *adapter) fetchQuota(ctx context.Context, cred *Credential) (*pluginapi.
 		// 「为什么没有额度」这句说明不在这里拼：它属于展示层，由 admin 依据
 		// 领取状态与额度明细统一生成（state.ClaimRecord.Note），供应商不必为
 		// 页面文案负责，宿主契约里也不该出现插件专用的说明字段。
-		if metrics, groups, _ := planGrantQuota(snapshot.plans, snapshot.serverTime); len(metrics) > 0 {
+		if metrics, groups := planGrantQuota(snapshot.plans, snapshot.serverTime); len(metrics) > 0 {
 			response.Summary = append(response.Summary, metrics...)
 			response.Groups = append(response.Groups, groups...)
 		}
@@ -690,15 +690,11 @@ func mergeOfferedPlans(primary, extra []core.PlanInfo) []core.PlanInfo {
 //
 // 只认模型用量类（meter=model_usage、unit_type=token）的授予，与 parsePlanGrants
 // 同一口径；按 entitlement_id 去重，避免多套餐重复累加同一份权益。
-func planGrantQuota(plans []map[string]any, serverTime int64) ([]pluginapi.QuotaMetric, []pluginapi.QuotaGroup, int64) {
+func planGrantQuota(plans []map[string]any, serverTime int64) ([]pluginapi.QuotaMetric, []pluginapi.QuotaGroup) {
 	seen := map[string]bool{}
 	group := pluginapi.QuotaGroup{DisplayName: "活动额度"}
 	var total float64
-	effectiveAt := int64(0)
 	for _, candidate := range grantCandidatePlans(plans, serverTime) {
-		if candidate.effectiveAt > 0 && (effectiveAt == 0 || candidate.effectiveAt < effectiveAt) {
-			effectiveAt = candidate.effectiveAt
-		}
 		for _, grant := range parsePlanGrants(candidate.plan) {
 			if grant.Model == "" || grant.Units <= 0 {
 				continue
@@ -726,13 +722,13 @@ func planGrantQuota(plans []map[string]any, serverTime int64) ([]pluginapi.Quota
 		}
 	}
 	if total <= 0 {
-		return nil, nil, 0
+		return nil, nil
 	}
 	metrics := []pluginapi.QuotaMetric{
 		{Key: "remaining", Label: "剩余额度", Value: total},
 		{Key: "total", Label: "总额度", Value: total},
 	}
-	return metrics, []pluginapi.QuotaGroup{group}, effectiveAt
+	return metrics, []pluginapi.QuotaGroup{group}
 }
 
 // grantCandidate 是参与额度兜底的套餐及其「最早未生效授予时刻」。

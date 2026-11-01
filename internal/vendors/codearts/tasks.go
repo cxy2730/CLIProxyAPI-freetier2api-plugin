@@ -619,7 +619,7 @@ func FetchQuota(ctx context.Context, cred *Credential) (*pluginapi.QuotaFetchRes
 			TierName: core.FirstNonEmpty(balance.Channel, "benefit"),
 			TierID:   "benefit",
 		},
-		// 顺序固定「剩余 → 总量 → 已用」，与其它渠道一致；宿主页头取首个有容量的
+		// 顺序固定「剩余 → 总量 → 已用」，与其它渠道一致；控制台页头（插件 auth.Totals）取首个有容量的
 		// 族，把总量排前面会让同一排 chips 的阅读顺序和别家相反。
 		Summary: []pluginapi.QuotaMetric{
 			{Key: "remaining", Label: "今日剩余", Value: float64(dailyLeft)},
@@ -713,7 +713,7 @@ func noCreditQuota(info *accountInfo) *pluginapi.QuotaFetchResponse {
 	}
 	return &pluginapi.QuotaFetchResponse{
 		Subscription: &pluginapi.QuotaSubscription{Plan: "CodeArts 积分", TierName: tierName, TierID: specCode},
-		// 上游没返回指标时仍要给出 total / remaining / used 三个键：宿主页头
+		// 上游没返回指标时仍要给出 total / remaining / used 三个键：控制台页头（插件 auth.Totals）
 		// 靠它们折算总额，键缺失会让整张卡变成「暂无额度数据」。Label 里保留
 		// 原因说明，用户才知道 0 是「没开通」而不是「查询坏了」。
 		Summary: []pluginapi.QuotaMetric{

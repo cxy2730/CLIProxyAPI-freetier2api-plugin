@@ -85,6 +85,9 @@ func claimNote(claim *pluginapi.ClaimStatus, result quotaResult) string {
 	}
 	// 额度本身没查到就别编说明：额度列已经写着失败原因，这里再说一句「上游
 	// 暂未返回明细」，会让人以为是活动还没生效，而不是这次取数根本没成功。
+	//
+	// 防御性检查：生产路径下 outcome.claim 仅在额度查询成功后赋值，此时 result.OK
+	// 必然为 true；此处保留守卫，防止未来重构调用链路时误把失败态传入。
 	if !result.OK {
 		return ""
 	}
@@ -94,7 +97,7 @@ func claimNote(claim *pluginapi.ClaimStatus, result quotaResult) string {
 	if claim.Claimable > 0 {
 		return "有可领取的套餐，领取后才会生成额度"
 	}
-	return "已领取，上游暂未返回额度明细；活动额度通常要几分钟才生效"
+	return "已领取，上游暂未返回额度明细"
 }
 
 // quotaBatchOutcome 是一轮批量查询里单个账号的产出。

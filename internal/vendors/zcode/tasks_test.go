@@ -190,10 +190,7 @@ func TestPlanGrantQuotaFallsBackToEntitlements(t *testing.T) {
 		"entitlements": []any{entitlement, entitlement},
 	}}
 
-	metrics, groups, effectiveAt := planGrantQuota(plans, 100)
-	if effectiveAt != 200 {
-		t.Fatalf("生效时刻 = %d, want 200", effectiveAt)
-	}
+	metrics, groups := planGrantQuota(plans, 100)
 	if len(metrics) != 2 || metrics[1].Value != 500000000 {
 		t.Fatalf("总额指标错误: %+v", metrics)
 	}
@@ -211,7 +208,7 @@ func TestPlanGrantQuotaFallsBackToEntitlements(t *testing.T) {
 			"entitlement_id": "ent-2", "meter": "feature", "unit_type": "token", "grant_units": float64(1),
 		}},
 	}}
-	if m, _, _ := planGrantQuota(other, 100); len(m) != 0 {
+	if m, _ := planGrantQuota(other, 100); len(m) != 0 {
 		t.Fatalf("功能类授予不应计入额度: %+v", m)
 	}
 
@@ -224,8 +221,8 @@ func TestPlanGrantQuotaFallsBackToEntitlements(t *testing.T) {
 			"unit_type": "token", "grant_units": float64(10), "effective_at": float64(200),
 		}},
 	}}
-	if m, _, at := planGrantQuota(pending, 100); len(m) == 0 || at != 200 {
-		t.Fatalf("pending 套餐应参与兜底: metrics=%+v effectiveAt=%d", m, at)
+	if m, _ := planGrantQuota(pending, 100); len(m) == 0 {
+		t.Fatalf("pending 套餐应参与兜底: metrics=%+v", m)
 	}
 }
 
@@ -272,7 +269,7 @@ func TestPlanGrantQuotaDedupesByEntitlementID(t *testing.T) {
 			map[string]any{"entitlement_id": "b", "show_name": "GLM-5.3", "meter": "model_usage", "unit_type": "token", "grant_units": float64(100)},
 		},
 	}}
-	metrics, _, _ := planGrantQuota(plans, 0)
+	metrics, _ := planGrantQuota(plans, 0)
 	if len(metrics) != 2 || metrics[1].Value != 200 {
 		t.Fatalf("两份授予应累加到 200: %+v", metrics)
 	}
@@ -291,8 +288,8 @@ func TestPendingEffectiveAtIgnoresNonTokenGrants(t *testing.T) {
 	if got := pendingEffectiveAt(plan, 100); got != 0 {
 		t.Fatalf("功能类权益不应产生生效时刻: %d", got)
 	}
-	if metrics, _, at := planGrantQuota([]map[string]any{plan}, 100); len(metrics) != 0 || at != 0 {
-		t.Fatalf("功能类权益不应参与额度兜底: metrics=%+v at=%d", metrics, at)
+	if metrics, _ := planGrantQuota([]map[string]any{plan}, 100); len(metrics) != 0 {
+		t.Fatalf("功能类权益不应参与额度兜底: metrics=%+v", metrics)
 	}
 }
 
