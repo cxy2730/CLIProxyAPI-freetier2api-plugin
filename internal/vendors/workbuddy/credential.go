@@ -945,6 +945,32 @@ func newHexID() string {
 	return NewHexID()
 }
 
+// NewUUIDv7 生成带连字符的标准 UUIDv7（RFC 9562，36 位）。
+//
+// 官方 5.8.4 客户端的 X-Conversation-ID 要求带连字符的标准 UUID 形态。
+func NewUUIDv7() string {
+	var buf [16]byte
+	if _, errRead := rand.Read(buf[:]); errRead != nil {
+		h := core.RandomHex(16)
+		return fmt.Sprintf("%s-%s-%s-%s-%s", h[0:8], h[8:12], h[12:16], h[16:20], h[20:32])
+	}
+	ms := time.Now().UnixMilli()
+	buf[0] = byte(ms >> 40)
+	buf[1] = byte(ms >> 32)
+	buf[2] = byte(ms >> 24)
+	buf[3] = byte(ms >> 16)
+	buf[4] = byte(ms >> 8)
+	buf[5] = byte(ms)
+	buf[6] = (buf[6] & 0x0F) | 0x70
+	buf[8] = (buf[8] & 0x3F) | 0x80
+	return fmt.Sprintf("%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+		buf[0], buf[1], buf[2], buf[3],
+		buf[4], buf[5],
+		buf[6], buf[7],
+		buf[8], buf[9],
+		buf[10], buf[11], buf[12], buf[13], buf[14], buf[15])
+}
+
 // NewUUIDv7Hex 生成去横线的 UUIDv7（32 位十六进制）。
 //
 // 官方客户端的 conversationRequestId / messageId 都是 UUIDv7 去横线

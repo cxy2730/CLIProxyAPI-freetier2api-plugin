@@ -460,8 +460,12 @@ type Endpoints struct {
 	Origin string
 	// AcceptLanguage 是该域的默认语言偏好。
 	AcceptLanguage string
-	// PlatformLabel 是 UA 中的平台段（global 必须是 "WorkBuddy AI"，否则触发风控）。
+	// PlatformLabel 是 UA 中的平台段（CN 为 WorkBuddy，Global 为 workbuddy-ai）。
 	PlatformLabel string
+	// ClientVersion 是官方客户端版本（CN 为 5.8.3，Global 为 5.8.4）。
+	ClientVersion string
+	// CLIVersion 是官方客户端内置 CLI 版本（CN 为 2.179.0，Global 为 2.161.0）。
+	CLIVersion string
 }
 
 var (
@@ -472,9 +476,11 @@ var (
 		ChatBase:       "https://www.workbuddy.cn",
 		BillingBase:    "https://www.codebuddy.cn",
 		WebBase:        "https://www.workbuddy.cn",
-		Origin:         "https://www.codebuddy.cn",
+		Origin:         "https://www.workbuddy.cn",
 		AcceptLanguage: "zh-CN",
 		PlatformLabel:  "WorkBuddy",
+		ClientVersion:  "5.8.3",
+		CLIVersion:     "2.179.0",
 	}
 	endpointsGlobal = Endpoints{
 		ChatBase:       "https://www.workbuddy.ai",
@@ -482,7 +488,9 @@ var (
 		WebBase:        "https://www.workbuddy.ai",
 		Origin:         "https://www.workbuddy.ai",
 		AcceptLanguage: "en-US",
-		PlatformLabel:  "WorkBuddy AI",
+		PlatformLabel:  "workbuddy-ai",
+		ClientVersion:  "5.8.4",
+		CLIVersion:     "2.161.0",
 	}
 )
 
@@ -649,16 +657,16 @@ func (c *Client) userAgent(region Region) string {
 	if override := strings.TrimSpace(c.opts.UserAgent); override != "" {
 		return override
 	}
+	ep := GetEndpoints(region)
 	clientVersion := c.opts.ClientVersion
 	if clientVersion == "" {
-		clientVersion = defaultClientVersion
+		clientVersion = ep.ClientVersion
 	}
 	cliVersion := c.opts.CLIVersion
 	if cliVersion == "" {
-		cliVersion = defaultCLIVersion
+		cliVersion = ep.CLIVersion
 	}
-	platform := GetEndpoints(region).PlatformLabel
-	return "WorkBuddy/" + clientVersion + " " + platform + "/" + clientVersion + " CLI/" + cliVersion
+	return "WorkBuddy/" + clientVersion + " " + ep.PlatformLabel + "/" + clientVersion + " CLI/" + cliVersion
 }
 
 // applyChatHeaders 写入对话请求专有的头。
@@ -666,10 +674,8 @@ func (c *Client) applyChatHeaders(req *http.Request, cred *Credential, meta Chat
 	applyCommonHeaders(req, c, cred)
 	applyAuthHeaders(req, cred)
 
-	// 正版对话请求（CLI 直发路径）不带 Origin/Referer/Accept-Language，
-	// 也不带设备指纹三头（X-Device-Token 仅用于签到与 auth/state）。
+	// 对话请求不发设备指纹与会话 ID 派生头（它们仅用于反馈上报与计费/签到）。
 	for _, key := range []string{
-		"Origin", "Referer", "Accept-Language",
 		"X-Device-Token", "X-Machine-ID", "X-Session-ID",
 	} {
 		req.Header.Del(key)
@@ -680,7 +686,6 @@ func (c *Client) applyChatHeaders(req *http.Request, cred *Credential, meta Chat
 	// 企业与域信息：CN 与 global 的形态不同，写错会被拒。
 	// X-Domain 与正版一致取当前对话域主机名（个人账号也恒发）。
 	if cred.Realm().IsGlobal() {
-		req.Header.Set("X-No-Enterprise-Id", "1")
 		req.Header.Set("X-Domain", endpointHost(GetEndpoints(RegionGlobal).ChatBase))
 	} else {
 		if enterpriseID := cred.EnterpriseIDValue(); enterpriseID != "" {
@@ -692,7 +697,7 @@ func (c *Client) applyChatHeaders(req *http.Request, cred *Credential, meta Chat
 		req.Header.Set("X-Domain", endpointHost(GetEndpoints(cred.Realm()).ChatBase))
 	}
 
-	applyAttributionHeaders(req, c)
+	applyAttributionHeaders(req, c, cred.Realm())
 	applyConversationHeaders(req, meta)
 
 	if c.opts.PassthroughIP && strings.TrimSpace(clientIP) != "" {
@@ -704,14 +709,15 @@ func (c *Client) applyChatHeaders(req *http.Request, cred *Credential, meta Chat
 
 // applyAttributionHeaders 写入客户端归属头。
 //
-// 正版恒定发送：X-Product=SaaS（deploymentType）、X-IDE-Type/X-IDE-Name=WorkBuddy、
-// X-IDE-Version=应用版本、X-Agent-Intent=craft、X-Agent-Type=main、X-Private-Data=false。
-// client_name 显式配成 "SaaS" 时还原旧行为（只发 X-Product），保留这个开关
-// 是为了在归属头引起风控变化时能快速回退。
-func applyAttributionHeaders(req *http.Request, c *Client) {
+// 官方 5.8.4 对齐：X-Product=SaaS、X-IDE-Type/X-IDE-Name=WorkBuddy、
+// X-IDE-Version=应用版本（CN 5.8.3 / Global 5.8.4）、
+// X-Agent-Intent=craft、X-Agent-Purpose=conversation、X-Agent-Type=main。
+// 国际版实测 X-Private-Data 恒为 true。
+func applyAttributionHeaders(req *http.Request, c *Client, region Region) {
+	ep := GetEndpoints(region)
 	clientVersion := c.opts.ClientVersion
 	if clientVersion == "" {
-		clientVersion = defaultClientVersion
+		clientVersion = ep.ClientVersion
 	}
 	name := strings.TrimSpace(c.opts.ClientName)
 	if name == "" {
@@ -727,7 +733,11 @@ func applyAttributionHeaders(req *http.Request, c *Client) {
 	req.Header.Set("X-IDE-Name", name)
 	req.Header.Set("X-IDE-Type", name)
 	req.Header.Set("X-IDE-Version", clientVersion)
-	req.Header.Set("X-Private-Data", "false")
+	if region.IsGlobal() {
+		req.Header.Set("X-Private-Data", "true")
+	} else {
+		req.Header.Set("X-Private-Data", "false")
+	}
 	req.Header.Set("X-Product", "SaaS")
 }
 
@@ -744,15 +754,11 @@ func endpointHost(base string) string {
 
 // applyConversationHeaders 写入会话头族。
 //
-// 正版形态（CLI 直发路径）：
-//   - X-Conversation-Request-ID：每轮稳定（UUIDv7-32hex）；
+// 5.8.4 渠道校验（11128）要求必须携带完整的会话头族与链路头族：
+//   - X-Conversation-ID：带连字符的标准 UUID（RFC 4122/9562），未指定时现生成；
+//   - X-Conversation-Request-ID / X-Root-Request-ID：每轮生成（UUIDv7-32hex，两者同值）；
 //   - X-Conversation-Message-ID / X-Request-ID：每步新生（UUIDv7-32hex，两者同值）；
-//   - X-Root-Request-ID / X-Parent-Conversation-ID：仅子会话才有，主对话不发；
-//   - trace 族每请求随机：traceId 32hex、spanId 16hex、parentSpanId 16hex，
-//     traceparent/b3/X-B3-*/X-Trace-ID 同源。
-//
-// 这一族头看似冗余（多个头取同一个值），但上游后台按它们做请求聚合与链路追踪，
-// 缺任意一个都会让会话在后台被拆散。
+//   - trace 族每请求同源随机：traceId 32hex、spanId 16hex，b3 为 traceId-spanId-1。
 func applyConversationHeaders(req *http.Request, meta ChatMeta) {
 	messageID := strings.TrimSpace(meta.MessageID)
 	if messageID == "" {
@@ -762,22 +768,22 @@ func applyConversationHeaders(req *http.Request, meta ChatMeta) {
 	if conversationRequestID == "" {
 		conversationRequestID = messageID
 	}
-	if conversationID := strings.TrimSpace(meta.ConversationID); conversationID != "" {
-		req.Header.Set("X-Conversation-ID", conversationID)
+	conversationID := strings.TrimSpace(meta.ConversationID)
+	if len(conversationID) != 36 || strings.Count(conversationID, "-") != 4 {
+		conversationID = NewUUIDv7()
 	}
+	req.Header.Set("X-Conversation-ID", conversationID)
 	req.Header.Set("X-Conversation-Request-ID", conversationRequestID)
+	req.Header.Set("X-Root-Request-ID", conversationRequestID)
 	req.Header.Set("X-Conversation-Message-ID", messageID)
 	req.Header.Set("X-Request-ID", messageID)
 
-	// trace 族：全随机且互相同源（正版由 otel 注入，不复用会话 ID）。
 	traceID := core.RandomHex(16)
 	spanID := core.RandomHex(8)
-	parentSpanID := core.RandomHex(8)
 	req.Header.Set("traceparent", "00-"+traceID+"-"+spanID+"-01")
-	req.Header.Set("b3", traceID+"-"+spanID+"-1-"+parentSpanID)
+	req.Header.Set("b3", traceID+"-"+spanID+"-1")
 	req.Header.Set("X-B3-TraceId", traceID)
 	req.Header.Set("X-B3-SpanId", spanID)
-	req.Header.Set("X-B3-ParentSpanId", parentSpanID)
 	req.Header.Set("X-B3-Sampled", "1")
 	req.Header.Set("X-Trace-ID", traceID)
 }

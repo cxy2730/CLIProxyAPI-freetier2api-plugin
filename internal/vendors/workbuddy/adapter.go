@@ -548,8 +548,6 @@ type runtimeConfig struct {
 func defaultRuntimeConfig() runtimeConfig {
 	return runtimeConfig{
 		sanitizeFingerprints: true,
-		clientVersion:        DefaultClientVersion,
-		cliVersion:           DefaultCLIVersion,
 		clientName:           DefaultClientName,
 		promptMode:           PromptModePassThrough,
 		promptText:           BuiltinPrompt(),
