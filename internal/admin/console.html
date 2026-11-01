@@ -228,9 +228,12 @@ input.aliasinput:focus { outline: none; border-color: var(--accent); box-shadow:
 .dropdown-menu label:hover { background: var(--bg); }
 .dropdown-menu label.disabled { cursor: not-allowed; opacity: .7; }
 
+/* 上限 + 滚动：一键做任务会把 8 个账号的结果拼成一段长文案，不限高时
+   390px 视口下横幅能长到 200px 以上，把账号表格整块挤出首屏。 */
 .banner { padding: 10px 14px; border-radius: 10px; margin-bottom: 12px; font-size: 13px;
           display: none; transition: opacity .2s ease; border: 1px solid transparent;
-          border-left-width: 3px; backdrop-filter: blur(6px); white-space: pre-line; }
+          border-left-width: 3px; backdrop-filter: blur(6px); white-space: pre-line;
+          max-height: min(38vh, 180px); overflow-y: auto; overscroll-behavior: contain; }
 .banner.show { display: block; }
 .banner.err  { background: var(--err-soft);  border-left: 3px solid var(--err);  color: var(--err); }
 .banner.ok   { background: var(--ok-soft);   border-left: 3px solid var(--ok);   color: var(--ok); }
@@ -1209,7 +1212,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
 
     var table = el("table");
     var head = el("tr");
-    ["", "状态", "供应商", "账号", "签到", "剩余 / 总额", "使用率", "刷新时间"]
+    ["", "状态", "供应商", "账号", "签到", "剩余 / 总额", "剩余率", "刷新时间"]
       .forEach(function (name) { head.appendChild(el("th", name)); });
     table.appendChild(head);
 
@@ -3125,14 +3128,45 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
         btn.disabled = false;
         var result = data.result || {};
         var lines = [];
+        var okAccounts = 0, skipAccounts = 0, failAccounts = 0;
+        var doneTotal = 0, errTotal = 0, skipTotal = 0;
         ((result && result.results) || []).forEach(function (entry) {
-          if (entry.skipped) { lines.push((entry.label || "") + "：" + entry.skipped); return; }
+          var label = entry.label || "";
+          if (entry.skipped) {
+            // 渠道不支持或账号被别的任务占着：既不是成功也不是失败，单独归类。
+            skipAccounts++;
+            lines.push(label + "：未执行 —— " + entry.skipped);
+            return;
+          }
           var results = entry.results || [];
           var done = results.filter(function (r) { return r.status === "done"; }).length;
           var errs = results.filter(function (r) { return r.status === "error"; }).length;
-          lines.push((entry.label || "") + "：完成 " + done + (errs ? "，失败 " + errs : ""));
+          var skips = results.filter(function (r) { return r.status === "skipped"; }).length;
+          doneTotal += done; errTotal += errs; skipTotal += skips;
+          if (errs) { failAccounts++; } else if (done) { okAccounts++; } else { skipAccounts++; }
+          var parts = ["完成 " + done];
+          if (skips) { parts.push("跳过 " + skips); }
+          if (errs) { parts.push("失败 " + errs); }
+          // 「完成 0」单独出现时读者无法判断是渠道不支持还是卡住了，补一句归因。
+          var note = "";
+          if (!done && !errs && skips) {
+            note = "（任务已全部领过或窗口未开）";
+          } else if (!done && !errs && !skips) {
+            note = "（该账号没有返回任何任务）";
+          }
+          lines.push(label + "：" + parts.join("，") + note);
         });
-        banner("ok", "全部账号执行完毕 —— " + (lines.join("；") || result.message || "无结果"), 5000);
+        var summary = "完成 " + doneTotal + " 个任务";
+        if (skipTotal) { summary += "，跳过 " + skipTotal; }
+        if (errTotal) { summary += "，失败 " + errTotal; }
+        var head = okAccounts + " 个账号有执行结果";
+        if (skipAccounts) { head += "，" + skipAccounts + " 个账号未执行"; }
+        if (failAccounts) { head += "，" + failAccounts + " 个账号有失败"; }
+        // 有失败给红、全跳过给黄，只有真跑出结果才给绿。
+        var kind = errTotal ? "err" : (doneTotal ? "ok" : "warn");
+        var text = head + " —— " + summary + "\n" + (lines.join("\n") || result.message || "无结果");
+        // 明细超过三行时常驻，避免 5 秒后消失、无从回看。
+        banner(kind, text, lines.length > 3 ? 0 : 8000);
         loadStatus(true);
       }).catch(function (err) {
         clearInterval(timer);

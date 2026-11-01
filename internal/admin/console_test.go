@@ -398,11 +398,11 @@ func TestConsolePageIsSingleScrollLayout(t *testing.T) {
 		t.Fatal("console page must show a compact queue progress summary")
 	}
 
-	// 额度不再单独占一张表：结果并入账号表的「剩余 / 总额」与「使用率」两列。
+	// 额度不再单独占一张表：结果并入账号表的「剩余 / 总额」与「剩余率」两列。
 	if strings.Contains(page, `id="quotas"`) {
 		t.Fatal("quota must be merged into the accounts table, not a separate section")
 	}
-	if !strings.Contains(page, "剩余 / 总额") || !strings.Contains(page, "使用率") {
+	if !strings.Contains(page, "剩余 / 总额") || !strings.Contains(page, "剩余率") {
 		t.Fatal("accounts table must carry the quota columns")
 	}
 }
@@ -770,7 +770,7 @@ func TestConsoleAccountsTableSupportsBatchSelection(t *testing.T) {
 	page := Page("/plugins/freetier2api")
 
 	for _, literal := range []string{
-		`["", "状态", "供应商", "账号", "签到", "剩余 / 总额", "使用率", "刷新时间"]`,
+		`["", "状态", "供应商", "账号", "签到", "剩余 / 总额", "剩余率", "刷新时间"]`,
 		"function accountCheckCell(account)",
 		`id="btnDeleteAccounts"`,
 		`id="btnDisableAccounts"`,
@@ -872,6 +872,44 @@ func TestConsoleAccountAndModelStatusLabels(t *testing.T) {
 	} {
 		if strings.Contains(page, forbidden) {
 			t.Fatalf("console page contains forbidden deprecated label: %s", forbidden)
+		}
+	}
+}
+
+// TestConsoleAutoAllReportsOutcomeHonestly 锁定「一键做任务」的收尾汇报。
+//
+// 旧实现无论结果如何都弹绿色横幅、5 秒后消失，8 个账号里 6 个根本没执行
+// 也报「全部账号执行完毕」；「完成 0」既可能是渠道不支持也可能是卡住，
+// 读者无从分辨。这里要求：按 done/skip/error 分级着色、失败有归因、
+// 明细多时常驻、横幅限高可滚动。
+func TestConsoleAutoAllReportsOutcomeHonestly(t *testing.T) {
+	page := Page("/plugins/freetier2api")
+
+	for _, want := range []string{
+		// 分级着色：有失败给红、全跳过给黄、只有真跑出结果才给绿。
+		`var kind = errTotal ? "err" : (doneTotal ? "ok" : "warn");`,
+		// 跳过与失败分开统计，不再把 skipped 混进「完成」。
+		`if (entry.skipped) {`,
+		`skipAccounts++;`,
+		// 「完成 0」的两种归因。
+		`note = "（任务已全部领过或窗口未开）";`,
+		`note = "（该账号没有返回任何任务）";`,
+		// 明细超过三行时常驻，不再 5 秒消失。
+		`banner(kind, text, lines.length > 3 ? 0 : 8000);`,
+		// 横幅限高，390px 视口下不挤掉账号表格。
+		`max-height: min(38vh, 180px); overflow-y: auto; overscroll-behavior: contain;`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("console page missing expected auto-all behavior: %s", want)
+		}
+	}
+
+	for _, forbidden := range []string{
+		// 无条件报成功的老收尾。
+		`banner("ok", "全部账号执行完毕`,
+	} {
+		if strings.Contains(page, forbidden) {
+			t.Fatalf("console page still reports success unconditionally: %s", forbidden)
 		}
 	}
 }
