@@ -44,7 +44,9 @@ const VendorKey = "vendor"
 const FormatChatCompletions = "chat-completions"
 
 // MaxAccountsPerVendor 是单个供应商允许添加的最大账号数。
-const MaxAccountsPerVendor = 10
+//
+// 0 表示不限制：账号数量完全由宿主 auth 目录里的凭证文件决定。
+const MaxAccountsPerVendor = 0
 
 // Vendor 是供应商实例的**必需**契约（= 供应商协议 × 区域）。
 //

@@ -39,17 +39,17 @@ func saveAuthFile(callbackID, fileName string, raw []byte) error {
 	// 否则磁盘上的 uid 与宿主登记键不一致，Windows 上会多出一条重复账号。
 	aligned, errSave := hostbridge.SaveAuth(callbackID, name, raw)
 	if errSave == nil {
-		logger.Info("saved auth file %s via host.auth.save", name)
+		logger.Info("授权文件 %s 已通过宿主接口保存", name)
 		return nil
 	}
-	logger.Debug("host.auth.save failed for %s: %v", name, errSave)
+	logger.Debug("宿主授权保存失败（%s）：%v", name, errSave)
 
 	for _, dir := range authFileDirs {
 		if fi, errStat := os.Stat(dir); errStat != nil || !fi.IsDir() {
 			continue
 		}
 		if errWrite := os.WriteFile(filepath.Join(dir, name), aligned, 0o600); errWrite == nil {
-			logger.Info("saved auth file %s on disk", name)
+			logger.Info("授权文件 %s 已保存到磁盘", name)
 			return nil
 		}
 	}

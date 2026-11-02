@@ -272,7 +272,7 @@ func FetchModels(ctx context.Context, cred *Credential) ([]Model, error) {
 	// 福利通道清单只在有凭证时拉取：它是「哪些模型能走每日免费额度」的唯一判据。
 	benefitModels, errBenefit := FetchBenefitModels(ctx, cred)
 	if errBenefit != nil {
-		logger.Debug("codearts: 拉取福利模型清单失败: %v", errBenefit)
+		logger.Debug("codearts：拉取福利模型清单失败：%v", errBenefit)
 		benefitModels = nil
 	}
 
@@ -306,12 +306,12 @@ func fetchBuiltinCatalog(ctx context.Context, cred *Credential) ([]byte, error) 
 func modelsFromCatalog(body []byte, errFetch error, benefit []Model) []Model {
 	fallback := func() []Model { return mergeBenefitModels(bundledModels(), benefit) }
 	if errFetch != nil {
-		logger.Debug("codearts: 拉取内置模型目录失败: %v", errFetch)
+		logger.Debug("codearts：拉取内置模型目录失败：%v", errFetch)
 		return fallback()
 	}
 	models, errParse := parseBuiltinModels(body)
 	if errParse != nil {
-		logger.Debug("codearts: 解析内置模型目录失败: %v", errParse)
+		logger.Debug("codearts：解析内置模型目录失败：%v", errParse)
 		return fallback()
 	}
 	if len(models) == 0 {

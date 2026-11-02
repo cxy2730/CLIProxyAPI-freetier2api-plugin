@@ -379,7 +379,7 @@ func (v *adapter) LoginPoll(ctx context.Context, state string) (*pluginapi.AuthL
 	if errAccount != nil {
 		// token 已拿到但账号信息失败：用最小信息落盘，让用户至少能用起来
 		// （账号信息会在后续刷新时补齐）。
-		logger.Error("fetch account info failed after token exchange: %v", errAccount)
+		logger.Error("换取令牌后拉取账号信息失败：%v", errAccount)
 	}
 	credential := &Credential{
 		AccessToken:  accessToken,
@@ -401,7 +401,7 @@ func (v *adapter) LoginPoll(ctx context.Context, state string) (*pluginapi.AuthL
 		}, nil
 	}
 	RemoveLoginSession(v.Env.Logins, state)
-	logger.Info("completed workbuddy login for %s (vendor=%s)",
+	logger.Info("workbuddy 登录完成：%s（供应商=%s）",
 		core.FirstNonEmpty(credential.NicknameValue(), credential.UIDValue()), v.ID())
 	return &pluginapi.AuthLoginPollResponse{
 		Status: pluginapi.AuthLoginStatusSuccess,
@@ -521,20 +521,14 @@ func (v *adapter) ModelCredits() map[string]string {
 
 // 本文件解析 WorkBuddy 的供应商专属配置，并保存出站请求需要的运行时快照。
 //
-// 归属边界：UA/设备令牌/提示词/机器盐都只影响 WorkBuddy 的上游协议，
+// 归属边界：UA/设备令牌/机器盐都只影响 WorkBuddy 的上游协议，
 // 由本包自己解释；根层只把全局设置与原始键交进来（core.Configurable）。
-
-const maxPromptFileSize = 1 << 20
 
 // runtimeConfig 是单个适配器实例的配置快照。
 type runtimeConfig struct {
-	enabledRealms        []string
-	sanitizeFingerprints bool
-	passthroughIP        bool
-	stateDir             string
-
-	promptMode string
-	promptText string
+	enabledRealms []string
+	passthroughIP bool
+	stateDir      string
 
 	userAgent     string
 	clientVersion string
@@ -547,10 +541,7 @@ type runtimeConfig struct {
 
 func defaultRuntimeConfig() runtimeConfig {
 	return runtimeConfig{
-		sanitizeFingerprints: true,
-		clientName:           DefaultClientName,
-		promptMode:           PromptModePassThrough,
-		promptText:           BuiltinPrompt(),
+		clientName: DefaultClientName,
 	}
 }
 
@@ -558,7 +549,6 @@ func defaultRuntimeConfig() runtimeConfig {
 func (r *runtime) configure(settings core.Settings, raw map[string]string) {
 	cfg := defaultRuntimeConfig()
 	cfg.enabledRealms = append([]string(nil), settings.EnabledRealms...)
-	cfg.sanitizeFingerprints = ParseBool(raw["workbuddy_sanitize_fingerprints"], true)
 	cfg.passthroughIP = ParseBool(raw["workbuddy_passthrough_ip"], false)
 	cfg.stateDir = settings.StateDir
 
@@ -577,65 +567,31 @@ func (r *runtime) configure(settings core.Settings, raw map[string]string) {
 	cfg.deviceToken = strings.TrimSpace(raw["workbuddy_device_token"])
 	cfg.deviceTokenFile = strings.TrimSpace(raw["workbuddy_device_token_file"])
 
-	// 提示词过滤是全局设置（prompt_mode / prompt_file），WorkBuddy 只是实现方。
-	if value := strings.ToLower(strings.TrimSpace(raw["prompt_mode"])); value != "" {
-		cfg.promptMode = value
-	}
-	if path := strings.TrimSpace(raw["prompt_file"]); path != "" {
-		text, errRead := readPromptFile(path)
-		if errRead != nil {
-			logger.Error("load prompt file failed, falling back to built-in prompt: %v", errRead)
-		} else if text != "" {
-			cfg.promptText = text
-		}
-	}
 	r.cfg.Store(&cfg)
-	r.prompt.Store(&promptState{Mode: cfg.promptMode, Text: cfg.promptText})
 	salt := strings.TrimSpace(settings.MachineSalt)
 	r.salt.Store(&salt)
 }
 
-func readPromptFile(path string) (string, error) {
-	raw, errRead := os.ReadFile(path)
-	if errRead != nil {
-		return "", errRead
-	}
-	if len(raw) > maxPromptFileSize {
-		return "", fmt.Errorf("prompt file %s exceeds %d bytes", path, maxPromptFileSize)
-	}
-	return strings.TrimSpace(string(raw)), nil
-}
-
-// options 返回一次请求要用的 Options（配置快照 + 当前提示词降级态）。
+// options 返回一次请求要用的 Options（配置快照）。
 func (r *runtime) options(ctx context.Context) Options {
 	cfg := *r.cfg.Load()
-	prompt := *r.prompt.Load()
-	promptText := prompt.Text
-	if prompt.Degraded {
-		promptText = degradedPrompt
-	}
 	return Options{
-		Context:              ctx,
-		EnabledRealms:        append([]string(nil), cfg.enabledRealms...),
-		PromptMode:           prompt.Mode,
-		PromptText:           promptText,
-		OnContentBlocked:     r.markPromptDegraded,
-		SanitizeFingerprints: cfg.sanitizeFingerprints,
-		PassthroughIP:        cfg.passthroughIP,
-		UserAgent:            cfg.userAgent,
-		ClientVersion:        cfg.clientVersion,
-		CLIVersion:           cfg.cliVersion,
-		ClientName:           cfg.clientName,
-		DeviceToken:          cfg.deviceToken,
-		DeviceTokenFile:      cfg.deviceTokenFile,
-		StateDir:             cfg.stateDir,
+		Context:         ctx,
+		EnabledRealms:   append([]string(nil), cfg.enabledRealms...),
+		PassthroughIP:   cfg.passthroughIP,
+		UserAgent:       cfg.userAgent,
+		ClientVersion:   cfg.clientVersion,
+		CLIVersion:      cfg.cliVersion,
+		ClientName:      cfg.clientName,
+		DeviceToken:     cfg.deviceToken,
+		DeviceTokenFile: cfg.deviceTokenFile,
+		StateDir:        cfg.stateDir,
 	}
 }
 
 // ConfigFields 声明 WorkBuddy 专属 YAML 配置。
 func (v *adapter) ConfigFields() []pluginapi.ConfigField {
 	return []pluginapi.ConfigField{
-		{Name: "workbuddy_sanitize_fingerprints", Type: pluginapi.ConfigFieldTypeBoolean, Description: "出站请求体指纹脱敏，默认开启。"},
 		{Name: "workbuddy_passthrough_ip", Type: pluginapi.ConfigFieldTypeBoolean, Description: "是否透传客户端 IP，默认关闭。"},
 		{Name: "workbuddy_user_agent", Type: pluginapi.ConfigFieldTypeString, Description: "出站 User-Agent 覆盖。"},
 		{Name: "workbuddy_client_version", Type: pluginapi.ConfigFieldTypeString, Description: "UA 中 WorkBuddy 版本段。"},
@@ -656,33 +612,10 @@ func ParseBool(raw string, fallback bool) bool {
 	return fallback
 }
 
-//go:embed assets/prompt_default.md
-var defaultPromptRaw []byte
-
-const degradedPrompt = "You are a helpful assistant. Respond in the user's language, " +
-	"follow the user's instructions, and be direct and concise."
-
-const (
-	PromptModePassThrough = "passthrough"
-	PromptModeCustom      = "custom"
-	PromptModeAppend      = "append"
-)
-
-// BuiltinPrompt 返回内置的默认提示词文本。
-func BuiltinPrompt() string {
-	return strings.TrimSpace(string(defaultPromptRaw))
-}
-
 // 本文件是 WorkBuddy 每个适配器实例独占的运行时状态。
 //
-// 配置、提示词降级态、档位表、设备令牌缓存、机器盐与模型探测宿主面
-// 都放在 runtime 里，不再使用包级变量；多个 App 实例互不影响。
-
-type promptState struct {
-	Mode     string
-	Text     string
-	Degraded bool
-}
+// 配置、档位表、设备令牌缓存、机器盐与模型探测宿主面都放在 runtime 里，
+// 不再使用包级变量；多个 App 实例互不影响。
 
 type effortState struct {
 	Defaults  map[string]string
@@ -693,7 +626,6 @@ type runtime struct {
 	env core.Env
 
 	cfg    atomic.Pointer[runtimeConfig]
-	prompt atomic.Pointer[promptState]
 	effort atomic.Pointer[effortState]
 	salt   atomic.Pointer[string]
 
@@ -710,17 +642,10 @@ func newRuntime(env core.Env) *runtime {
 	cfg := defaultRuntimeConfig()
 	rt := &runtime{env: env, modelCache: map[Region]modelCacheEntry{}}
 	rt.cfg.Store(&cfg)
-	rt.prompt.Store(&promptState{Mode: PromptModePassThrough, Text: BuiltinPrompt()})
 	rt.effort.Store(&effortState{Defaults: map[string]string{}, Supported: map[string][]string{}})
 	salt := ""
 	rt.salt.Store(&salt)
 	return rt
-}
-
-func (r *runtime) markPromptDegraded() {
-	current := *r.prompt.Load()
-	current.Degraded = true
-	r.prompt.Store(&current)
 }
 
 func (r *runtime) effortTables() (map[string]string, map[string][]string) {

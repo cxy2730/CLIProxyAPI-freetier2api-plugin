@@ -11,7 +11,6 @@ import (
 	"freetier2api-plugin/cpasdk/pluginabi"
 	"freetier2api-plugin/cpasdk/pluginapi"
 	"freetier2api-plugin/internal/app"
-	"freetier2api-plugin/internal/vendors/workbuddy"
 )
 
 // TestModelsForAuthIsolatesRealms 验证 realm 隔离的核心机制。
@@ -50,10 +49,10 @@ func TestModelsForAuthIsolatesRealms(t *testing.T) {
 	for _, m := range resp1.Models {
 		ids1 = append(ids1, m.ID)
 	}
-	if !containsString(ids1, "glm-5.2") || !containsString(ids1, "cn-exclusive") {
+	if !containsString(ids1, "workbuddycn-glm-5.2") || !containsString(ids1, "workbuddycn-cn-exclusive") {
 		t.Fatalf("cn auth missing models: %v", ids1)
 	}
-	if containsString(ids1, "global-exclusive") {
+	if containsString(ids1, "workbuddyglobal-global-exclusive") {
 		t.Fatalf("cn auth must NOT contain global-exclusive: %v", ids1)
 	}
 
@@ -65,10 +64,10 @@ func TestModelsForAuthIsolatesRealms(t *testing.T) {
 	for _, m := range resp2.Models {
 		ids2 = append(ids2, m.ID)
 	}
-	if !containsString(ids2, "glm-5.2") || !containsString(ids2, "global-exclusive") {
+	if !containsString(ids2, "workbuddyglobal-glm-5.2") || !containsString(ids2, "workbuddyglobal-global-exclusive") {
 		t.Fatalf("global auth missing models: %v", ids2)
 	}
-	if containsString(ids2, "cn-exclusive") {
+	if containsString(ids2, "workbuddycn-cn-exclusive") {
 		t.Fatalf("global auth must NOT contain cn-exclusive: %v", ids2)
 	}
 
@@ -84,7 +83,7 @@ func TestModelsForAuthIsolatesRealms(t *testing.T) {
 	for _, m := range resp1After.Models {
 		ids1After = append(ids1After, m.ID)
 	}
-	if containsString(ids1After, "glm-5.2") {
+	if containsString(ids1After, "workbuddycn-glm-5.2") {
 		t.Fatalf("cn auth must not contain disabled cn:glm-5.2, got: %v", ids1After)
 	}
 
@@ -95,7 +94,7 @@ func TestModelsForAuthIsolatesRealms(t *testing.T) {
 	for _, m := range resp2After.Models {
 		ids2After = append(ids2After, m.ID)
 	}
-	if !containsString(ids2After, "glm-5.2") {
+	if !containsString(ids2After, "workbuddyglobal-glm-5.2") {
 		t.Fatalf("global auth should still contain glm-5.2 after disabling only cn: %v", ids2After)
 	}
 }
@@ -126,7 +125,7 @@ func TestStaticModelsBareAndMerged(t *testing.T) {
 	countGLM := 0
 	var glmModel pluginapi.ModelInfo
 	for _, model := range response.Models {
-		if model.ID == "glm-5.2" {
+		if model.ID == "workbuddycn-glm-5.2" {
 			countGLM++
 			glmModel = model
 		}
@@ -135,7 +134,7 @@ func TestStaticModelsBareAndMerged(t *testing.T) {
 		}
 	}
 	if countGLM != 1 {
-		t.Fatalf("glm-5.2 must be merged into exactly 1 model entry, got %d", countGLM)
+		t.Fatalf("workbuddycn-glm-5.2 must be merged into exactly 1 model entry, got %d", countGLM)
 	}
 	if glmModel.ContextLength != 1000000 {
 		t.Fatalf("glm-5.2 context_length = %d, want 1000000", glmModel.ContextLength)
@@ -150,53 +149,6 @@ func TestStaticModelsBareAndMerged(t *testing.T) {
 			strings.Contains(strings.ToLower(m.ID), "qmodel") {
 			t.Fatalf("model %q from unconfigured vendor must not be present in static models", m.ID)
 		}
-	}
-}
-
-// TestPrepareBodyPromptModes 验证单 Pass 中提示词三种模式（passthrough/custom/append）及模型裸名改写。
-func TestPrepareBodyPromptModes(t *testing.T) {
-	baseJSON := []byte(`{"model":"cn:glm-5.2","messages":[{"role":"system","content":"old sys"},{"role":"user","content":"hello"}]}`)
-
-	// 1. passthrough
-	outPass := workbuddy.PrepareBody(baseJSON, workbuddy.PrepareOptions{
-		Model:      "glm-5.2",
-		PromptMode: "passthrough",
-		PromptText: "custom prompt",
-	})
-	var mapPass map[string]any
-	_ = json.Unmarshal(outPass, &mapPass)
-	if mapPass["model"] != "glm-5.2" {
-		t.Fatalf("model must be rewritten to bare name, got: %v", mapPass["model"])
-	}
-	msgsPass := mapPass["messages"].([]any)
-	if msgsPass[0].(map[string]any)["content"] != "old sys" {
-		t.Fatalf("passthrough should keep old sys, got: %v", msgsPass[0])
-	}
-
-	// 2. custom
-	outCustom := workbuddy.PrepareBody(baseJSON, workbuddy.PrepareOptions{
-		Model:      "glm-5.2",
-		PromptMode: "custom",
-		PromptText: "pure prompt",
-	})
-	var mapCustom map[string]any
-	_ = json.Unmarshal(outCustom, &mapCustom)
-	msgsCustom := mapCustom["messages"].([]any)
-	if len(msgsCustom) != 2 || msgsCustom[0].(map[string]any)["content"] != "pure prompt" {
-		t.Fatalf("custom should replace sys, got: %v", msgsCustom)
-	}
-
-	// 3. append
-	outAppend := workbuddy.PrepareBody(baseJSON, workbuddy.PrepareOptions{
-		Model:      "glm-5.2",
-		PromptMode: "append",
-		PromptText: "appended rule",
-	})
-	var mapAppend map[string]any
-	_ = json.Unmarshal(outAppend, &mapAppend)
-	msgsAppend := mapAppend["messages"].([]any)
-	if len(msgsAppend) != 3 || msgsAppend[1].(map[string]any)["content"] != "appended rule" {
-		t.Fatalf("append should insert prompt after leading sys, got: %v", msgsAppend)
 	}
 }
 
@@ -410,8 +362,8 @@ func TestModelAliasSwapRegistersAliasID(t *testing.T) {
 		t.Fatalf("aliased model must expose the alias as ID/Name: %+v", out[0])
 	}
 	// 未设别名的模型原样保留官方 ID。
-	if out[1].ID != "glm-5.3" || out[1].Name != "GLM-5.3" {
-		t.Fatalf("unaliased model must keep official ID: %+v", out[1])
+	if out[1].ID != "qodercn-glm-5.3" || out[1].Name != "qodercn-glm-5.3" {
+		t.Fatalf("unaliased model must keep prefixed official ID: %+v", out[1])
 	}
 }
 

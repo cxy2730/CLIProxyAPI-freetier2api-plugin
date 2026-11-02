@@ -320,17 +320,17 @@ func fetchTokenPlanRemains(ctx context.Context, cred *Credential, groupID string
 	}
 	resp, errDo := hostbridge.Client(ctx, 10*time.Second).Do(req)
 	if errDo != nil {
-		logger.Debug("minimax token plan windows: request failed: %v", errDo)
+		logger.Debug("minimax 令牌套餐窗口：请求失败：%v", errDo)
 		return nil
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		logger.Debug("minimax token plan windows: endpoint returned %s", resp.Status)
+		logger.Debug("minimax 令牌套餐窗口：端点返回 %s", resp.Status)
 		return nil
 	}
 	raw, errRead := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if errRead != nil {
-		logger.Debug("minimax token plan windows: read failed: %v", errRead)
+		logger.Debug("minimax 令牌套餐窗口：读取失败：%v", errRead)
 		return nil
 	}
 	return parseTokenPlanRemains(raw)
@@ -340,7 +340,7 @@ func fetchTokenPlanRemains(ctx context.Context, cred *Credential, groupID string
 func parseTokenPlanRemains(raw []byte) []pluginapi.QuotaGroup {
 	var body map[string]any
 	if errDecode := json.Unmarshal(raw, &body); errDecode != nil {
-		logger.Debug("minimax token plan windows: decode failed: %v", errDecode)
+		logger.Debug("minimax 令牌套餐窗口：解析失败：%v", errDecode)
 		return nil
 	}
 	rows, _ := body["model_remains"].([]any)

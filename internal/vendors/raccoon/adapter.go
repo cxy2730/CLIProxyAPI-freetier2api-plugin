@@ -142,7 +142,7 @@ func (v *adapter) ModelsForAuth(ctx context.Context, cred *core.Credential) ([]p
 	}
 	models, errModels := FetchModels(ctx, v.resolveLLMBase(), native.AccessTokenValue())
 	if errModels != nil {
-		logger.Info("raccoon: model catalog fallback to static: %v", errModels)
+		logger.Info("raccoon：模型目录回退到静态清单：%v", errModels)
 		models = StaticFallbackModels()
 	}
 	return v.modelsToPluginAPI(models), nil

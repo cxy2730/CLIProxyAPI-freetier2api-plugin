@@ -346,7 +346,7 @@ func (v *adapter) LoginPoll(ctx context.Context, state string) (*pluginapi.AuthL
 	storage, cred := BuildLoginStorage(result.Region, result.Token, result.RefreshToken, result.Profile, plan)
 	authID := LoginAuthID(result.Profile, state)
 	fileName := core.FileNameFor(v.ID(), strings.TrimPrefix(authID, "qoder-"))
-	logger.Info("completed qoder login (vendor=%s email=%s)", v.ID(), cred.Email)
+	logger.Info("qoder 登录完成（供应商=%s 邮箱=%s）", v.ID(), cred.Email)
 	return &pluginapi.AuthLoginPollResponse{
 		Status:  pluginapi.AuthLoginStatusSuccess,
 		Message: "登录成功",

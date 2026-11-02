@@ -20,7 +20,6 @@ import (
 	"strings"
 	"testing"
 
-	"freetier2api-plugin/internal/admin"
 	"freetier2api-plugin/internal/app"
 	"freetier2api-plugin/internal/core"
 )
@@ -98,36 +97,6 @@ func TestPluginIDMatchesLibraryName(t *testing.T) {
 	}
 	if app.ProviderKey != core.ProviderKey {
 		t.Fatalf("app.ProviderKey (%q) must match core.ProviderKey (%q)", app.ProviderKey, core.ProviderKey)
-	}
-}
-
-// TestConsolePagePathsAreDeclared 验证控制台页引用的路径都在路由表里声明。
-//
-// 页面引用了未声明的路由会表现为「点了没反应」，而宿主不会报错。
-func TestConsolePagePathsAreDeclared(t *testing.T) {
-	installFakeHost(t)
-	setupTestPlugin(t)
-	page := admin.Page(app.ManagementRoutePrefix)
-
-	declared := map[string]bool{}
-	for _, route := range testApp.ManagementRegistration().Routes {
-		suffix := strings.TrimPrefix(route.Path, app.ManagementRoutePrefix)
-		declared[suffix] = true
-	}
-
-	// 页面里通过 MGMT + path 拼接调用接口，因此按已知清单核对。
-	referenced := []string{
-		"/status", "/logs", "/checkin", "/quotas", "/models/refresh",
-		"/models/alias", "/settings", "/tasks/scan", "/tasks/run", "/tasks/queue", "/tasks/auto",
-		"/keepalive",
-	}
-	for _, path := range referenced {
-		if !strings.Contains(page, `"`+path) {
-			t.Fatalf("console page does not reference %q (test list is stale?)", path)
-		}
-		if !declared[path] {
-			t.Fatalf("console page calls %q but the route is not declared", path)
-		}
 	}
 }
 

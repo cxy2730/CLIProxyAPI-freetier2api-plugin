@@ -96,7 +96,7 @@ func (v *adapter) StaticModels(ctx context.Context) ([]pluginapi.ModelInfo, erro
 	if errModels != nil {
 		// 探测失败退回内置兜底清单：没有模型注册比注册一份可能过时的
 		// 清单更糟（客户端会看不到任何模型）。
-		logger.Debug("cline: list models failed, using bundled list: %v", errModels)
+		logger.Debug("cline：拉取模型列表失败，改用内置清单：%v", errModels)
 		models = bundledModels()
 	}
 	return v.modelsToPluginAPI(models), nil
@@ -222,7 +222,7 @@ func (v *adapter) LoginStart(ctx context.Context, _ map[string]any) (*pluginapi.
 	}
 	sessionID := "cline_" + core.RandomHex(16)
 	v.Env.Logins.Register(VendorID, sessionID, time.Until(device.ExpiresAt), device.Interval, &pendingLogin{deviceCode: device.DeviceCode})
-	logger.Info("started cline login (user_code=%s)", device.UserCode)
+	logger.Info("已发起 cline 登录（用户码=%s）", device.UserCode)
 	return &pluginapi.AuthLoginStartResponse{
 		Provider:  core.ProviderKey,
 		URL:       device.VerificationURI,
@@ -284,7 +284,7 @@ func (v *adapter) LoginPoll(ctx context.Context, state string) (*pluginapi.AuthL
 		}, nil
 	}
 	label := core.FirstNonEmpty(credential.Label, credential.Email, credential.AccountID)
-	logger.Info("completed cline login for %s", core.FirstNonEmpty(credential.Email, credential.AccountID))
+	logger.Info("cline 登录完成：%s", core.FirstNonEmpty(credential.Email, credential.AccountID))
 	return &pluginapi.AuthLoginPollResponse{
 		Status:  pluginapi.AuthLoginStatusSuccess,
 		Message: "登录成功",

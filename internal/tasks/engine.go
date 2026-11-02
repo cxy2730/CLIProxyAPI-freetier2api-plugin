@@ -35,7 +35,7 @@ const (
 
 // runTaskScheduler 是后台调度循环。
 func (s *Service) runTaskScheduler(ctx context.Context) {
-	logger.Info("task scheduler started")
+	logger.Info("任务调度已启动")
 	s.schedulerMu.Lock()
 	s.running = true
 	s.schedulerMu.Unlock()
@@ -43,7 +43,7 @@ func (s *Service) runTaskScheduler(ctx context.Context) {
 		s.schedulerMu.Lock()
 		s.running = false
 		s.schedulerMu.Unlock()
-		logger.Info("task scheduler stopped")
+		logger.Info("任务调度已停止")
 	}()
 	for {
 		kinds, next := s.nextScheduledWake(s.deps.Now())
@@ -55,12 +55,12 @@ func (s *Service) runTaskScheduler(ctx context.Context) {
 		case signal := <-s.pokeCh:
 			timer.Stop()
 			if signal == schedulerReconfigure {
-				logger.Debug("task scheduler reconfigured")
+				logger.Debug("任务调度已重新配置")
 			}
 			continue
 		case <-timer.C:
 			if delay := time.Since(next); delay > schedulerLateThreshold {
-				logger.Debug("task scheduler woke %s late, waiting grace period", delay.Round(time.Millisecond))
+				logger.Debug("任务调度晚醒 %s，进入宽限期等待", delay.Round(time.Millisecond))
 				if !core.SleepContext(ctx, schedulerWakeGrace) {
 					return
 				}
@@ -219,11 +219,11 @@ func (s *Service) forEachAccount(ctx context.Context, callbackID string, targets
 		EnabledRealms: cfg.EnabledRealms,
 	})
 	for _, failure := range failures {
-		logger.Debug("skip account %s: %s", core.FirstNonEmpty(failure.Entry.Name, failure.Entry.ID), failure.Message)
+		logger.Debug("跳过账号 %s：%s", core.FirstNonEmpty(failure.Entry.Name, failure.Entry.ID), failure.Message)
 	}
 	for _, account := range accounts {
 		if errRun := fn(ctx, newAccountContext(account)); errRun != nil {
-			logger.Debug("account %s task failed: %v", core.FirstNonEmpty(account.Entry.Label, account.Entry.Name), errRun)
+			logger.Debug("账号 %s 任务失败：%v", core.FirstNonEmpty(account.Entry.Label, account.Entry.Name), errRun)
 		}
 		if !core.SleepContext(ctx, accountGap) {
 			return
@@ -265,10 +265,10 @@ func (a *accountContext) label() string {
 // runCheckinAll 执行全账号签到，并在启用自动任务时驱动从属闭环。
 func (s *Service) runCheckinAll(ctx context.Context) {
 	if !s.effectiveAutoCheckin() {
-		logger.Debug("checkin skipped: auto checkin is disabled")
+		logger.Debug("已跳过签到：自动签到未开启")
 		return
 	}
-	logger.Info("checkin: starting for all accounts")
+	logger.Info("签到：开始处理全部账号")
 	count := 0
 	s.forEachAccount(ctx, "", nil, func(ctx context.Context, account *accountContext) error {
 		if !core.SupportsCheckinFor(account.vendor, account.credential) {
@@ -276,7 +276,7 @@ func (s *Service) runCheckinAll(ctx context.Context) {
 		}
 		result, errCheckin := s.Checkin(ctx, account.vendor, account.credential, CheckinTriggerSchedule)
 		if errCheckin != nil {
-			logger.Error("checkin %s: %v", account.label(), errCheckin)
+			logger.Error("签到 %s：%v", account.label(), errCheckin)
 			return nil
 		}
 		switch {
@@ -284,16 +284,16 @@ func (s *Service) runCheckinAll(ctx context.Context) {
 			// 本次没真正领到（窗口未开启 / 领取被拒 / 未确认发放）。
 			// 用 Info 而不是 Error：上游窗口未开启是正常状态，不是故障；
 			// 但措辞要如实，别让它看起来像签到成功了。
-			logger.Info("checkin %s: not completed: %s", account.label(), result.Message)
+			logger.Info("签到 %s：未完成：%s", account.label(), result.Message)
 		case result.Already:
-			logger.Info("checkin %s: already checked in today", account.label())
+			logger.Info("签到 %s：今天已签到", account.label())
 		default:
-			logger.Info("checkin %s: %s", account.label(), result.Message)
+			logger.Info("签到 %s：%s", account.label(), result.Message)
 		}
 		count++
 		return nil
 	})
-	logger.Info("checkin: finished for %d account(s)", count)
+	logger.Info("签到：已完成 %d 个账号", count)
 
 	if s.effectiveAutoTasks() {
 		for _, spec := range s.catalog.Specs() {
@@ -622,7 +622,7 @@ func (s *Service) runQueueItems(callbackID string, concurrency int, seq int64) {
 
 		if preparer, okPreparer := core.As[core.TaskPreparer](target.vendor); okPreparer {
 			if accepted := preparer.PrepareTasks(ctx, target.credential); accepted > 0 {
-				logger.Debug("queue: accepted %d task(s) for %s", accepted, target.label())
+				logger.Debug("队列：已接受 %d 个任务（%s）", accepted, target.label())
 				core.SleepContext(ctx, 1050*time.Millisecond)
 			}
 		}
@@ -639,7 +639,7 @@ func (s *Service) runQueueItems(callbackID string, concurrency int, seq int64) {
 		}
 		return struct{}{}
 	})
-	logger.Info("task queue finished (seq=%d)", seq)
+	logger.Info("任务队列已结束（序号=%d）", seq)
 }
 
 // runTaskForAccount 调用供应商的任务执行能力并记录结果。

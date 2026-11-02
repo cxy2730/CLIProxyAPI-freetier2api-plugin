@@ -166,7 +166,7 @@ func (s *Service) listAccountSummaries(ctx context.Context, callbackID string) [
 	today := s.tasks.Today()
 	loaded, failures := s.pool.Load(ctx, callbackID, auth.Options{IncludeDisabled: true})
 	for _, failure := range failures {
-		logger.Debug("skip account %s: %s", core.FirstNonEmpty(failure.Entry.Name, failure.Entry.ID), failure.Message)
+		logger.Debug("跳过账号 %s：%s", core.FirstNonEmpty(failure.Entry.Name, failure.Entry.ID), failure.Message)
 	}
 	out := make([]accountSummary, 0, len(loaded))
 	for _, account := range loaded {
@@ -268,13 +268,6 @@ func lookupLegacyCheckin(current state.State, credential *core.Credential) (stat
 	}
 	record, okRecord := current.Checkin[legacyUID]
 	return record, okRecord
-}
-
-func (s *Service) buildLogsPayload(req pluginapi.ManagementRequest) map[string]any {
-	since := queryInt64(req.Query, "since", 0)
-	limit := int(queryInt64(req.Query, "limit", 200))
-	entries, newest := logger.Snapshot(uint64(since), limit)
-	return map[string]any{"ok": true, "entries": entries, "next": newest}
 }
 
 type accountBatchRequest struct {
@@ -408,7 +401,7 @@ func (s *Service) deleteAuthFile(ctx context.Context, callbackID string, entry c
 		return fmt.Errorf("删除文件失败：%w", errRemove)
 	}
 	s.purgeAccountState(raw, filepath.Base(targetPath))
-	logger.Info("deleted auth file %s (vendor=%s)", filepath.Base(targetPath),
+	logger.Info("已删除授权文件 %s（供应商=%s）", filepath.Base(targetPath),
 		credentialVendorLabel(s.registry, raw, filepath.Base(targetPath)))
 	return nil
 }
@@ -467,7 +460,7 @@ func (s *Service) setAuthDisabled(ctx context.Context, callbackID string, entry 
 	if errSave := saveAuthFile(callbackID, filepath.Base(targetPath), updated); errSave != nil {
 		return errSave
 	}
-	logger.Info("auth file %s disabled=%t (vendor=%s)", filepath.Base(targetPath), disabled,
+	logger.Info("授权文件 %s 停用=%t（供应商=%s）", filepath.Base(targetPath), disabled,
 		credentialVendorLabel(s.registry, raw, filepath.Base(targetPath)))
 	return nil
 }
@@ -549,7 +542,7 @@ func (s *Service) handleAccountAddRequest(req pluginapi.ManagementRequest) plugi
 	if errSave := saveAuthFile(callbackID, fileName, rawJSON); errSave != nil {
 		return JSONResponse(http.StatusInternalServerError, map[string]any{"ok": false, "error": errSave.Error()})
 	}
-	logger.Info("added auth file %s for vendor %s", fileName, vendor.ID())
+	logger.Info("已为供应商 %s 添加授权文件 %s", fileName, vendor.ID())
 	return JSONResponse(http.StatusOK, map[string]any{"ok": true, "auth_id": fileName, "message": "账号保存成功"})
 }
 
@@ -598,7 +591,7 @@ func (s *Service) handleAccountAliasRequest(req pluginapi.ManagementRequest) plu
 		}
 		current.AccountAliases[fileID] = alias
 	})
-	logger.Info("account %s alias: %q", fileID, alias)
+	logger.Info("账号 %s 别名：%q", fileID, alias)
 	return JSONResponse(http.StatusOK, map[string]any{"ok": true, "alias": alias})
 }
 

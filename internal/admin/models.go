@@ -221,7 +221,7 @@ func (s *Service) modelToggleHandler(req pluginapi.ManagementRequest) pluginapi.
 	if body.Disabled {
 		verb = "禁用"
 	}
-	logger.Info("models %s: %d 个（%s）", verb, len(targets), strings.Join(targets, ", "))
+	logger.Info("模型%s：%d 个（%s）", verb, len(targets), strings.Join(targets, ", "))
 	return JSONResponse(http.StatusOK, map[string]any{
 		"ok": true, "changed": len(targets), "disabled": body.Disabled,
 		"disabled_models": s.deps.State().DisabledModels,

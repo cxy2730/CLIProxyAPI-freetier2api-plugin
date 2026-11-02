@@ -117,7 +117,7 @@ const UserInfoPath = "/userapi/v1/user-info"
 // 改变签到结论，也不值得重试。
 func TriggerLoginActive(ctx context.Context, baseURL string, cred *Credential) {
 	if errActive := reportLoginActive(ctx, baseURL, cred); errActive != nil {
-		logger.Debug("autoclaw: login-active report failed: %v", errActive)
+		logger.Debug("autoclaw：登录活跃上报失败：%v", errActive)
 	}
 }
 

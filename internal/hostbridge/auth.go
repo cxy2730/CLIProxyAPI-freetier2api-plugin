@@ -229,7 +229,7 @@ func logHostCallFailure(method string, err error) {
 	if err == nil {
 		return
 	}
-	logger.Debug("host callback %s failed: %v", method, err)
+	logger.Debug("宿主回调 %s 失败：%v", method, err)
 }
 
 // accountIdentity 返回一个宿主账号条目的**唯一权威身份标识**。
@@ -389,7 +389,7 @@ func AuthJSON(ctx context.Context, callbackID, authIndex string) ([]byte, bool) 
 func ActiveVendorSet(ctx context.Context, callbackID string, registry *core.Registry) map[string]bool {
 	entries, errList := ListAuths(ctx, callbackID, registry)
 	if errList != nil {
-		logger.Debug("activeVendorSet: list host auths failed: %v", errList)
+		logger.Debug("activeVendorSet：读取宿主授权列表失败：%v", errList)
 		return map[string]bool{}
 	}
 	active := make(map[string]bool)

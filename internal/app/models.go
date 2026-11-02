@@ -56,7 +56,7 @@ func (a *App) handleModelForAuth(request []byte) ([]byte, error) {
 	ctx := hostbridge.WithCallbackID(context.Background(), rpc.HostCallbackID)
 	credential, vendor, errResolve := a.resolveVendorCredential(ctx, rpc.HostCallbackID, rpc.StorageJSON, rpc.AuthID, rpc.Attributes)
 	if errResolve != nil {
-		logger.Debug("model.for_auth: no credential for %s: %v", rpc.AuthID, errResolve)
+		logger.Debug("按授权查模型：%s 无可用凭证：%v", rpc.AuthID, errResolve)
 		return core.OKEnvelope(pluginapi.ModelResponse{Provider: providerKey})
 	}
 	if !a.models.RealmEnabled(vendor.Region()) {
@@ -64,7 +64,7 @@ func (a *App) handleModelForAuth(request []byte) ([]byte, error) {
 	}
 	models, errModels := core.ModelsFor(vendor, ctx, credential)
 	if errModels != nil {
-		logger.Debug("model.for_auth: probe models for %s failed: %v", vendor.ID(), errModels)
+		logger.Debug("按授权查模型：%s 探测模型失败：%v", vendor.ID(), errModels)
 		return core.OKEnvelope(pluginapi.ModelResponse{Provider: providerKey})
 	}
 	// 顺手写入控制台回读缓存（官方 ID，未过滤/未换别名）。
@@ -74,7 +74,7 @@ func (a *App) handleModelForAuth(request []byte) ([]byte, error) {
 	// 空清单不写缓存：供应商在探测失败时按契约返回空结果（让宿主淘汰坏凭证），
 	// 若照样覆盖，一次瞬时失败就会把整家供应商从控制台抹掉。
 	if !a.models.CacheProbedModels(vendor.ID(), models) {
-		logger.Info("model.for_auth: %s returned no models for %s (host will drop this credential)",
+		logger.Info("按授权查模型：%s 未返回 %s 的模型（宿主将丢弃该凭证）",
 			vendor.ID(), rpc.AuthID)
 	}
 	return core.OKEnvelope(pluginapi.ModelResponse{

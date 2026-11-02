@@ -130,14 +130,14 @@ func (a *App) handlePluginRegister(request []byte) ([]byte, error) {
 		return nil, fmt.Errorf("plugin.register: %w", errApply)
 	}
 	if _, errState := a.loadState(cfg); errState != nil {
-		logger.Error("load state failed: %v", errState)
+		logger.Error("加载状态失败：%v", errState)
 	}
 	a.applyModelCatalog(cfg)
 	if !a.registered {
 		a.registered = true
 		a.StartBackgroundWork()
 	}
-	logger.Info("registered: realms=%v state_dir=%s", cfg.EnabledRealms, cfg.StateDir)
+	logger.Info("已注册：区域=%v 状态目录=%s", cfg.EnabledRealms, cfg.StateDir)
 	return core.OKEnvelope(a.Registration())
 }
 
@@ -155,11 +155,11 @@ func (a *App) handlePluginReconfigure(request []byte) ([]byte, error) {
 	}
 	if previous.StateDir != cfg.StateDir {
 		if _, errState := a.loadState(cfg); errState != nil {
-			logger.Error("reload state failed: %v", errState)
+			logger.Error("重新加载状态失败：%v", errState)
 		}
 	}
 	a.applyModelCatalog(cfg)
-	logger.Info("reconfigured: realms=%v state_dir=%s", cfg.EnabledRealms, cfg.StateDir)
+	logger.Info("已重新配置：区域=%v 状态目录=%s", cfg.EnabledRealms, cfg.StateDir)
 	return core.OKEnvelope(a.Registration())
 }
 

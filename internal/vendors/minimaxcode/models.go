@@ -193,7 +193,7 @@ func (c *workspaceCache) models(ctx context.Context, cred *Credential, baseURLOv
 	}
 	entry := c.entries[key]
 	if errFetch != nil || len(models) == 0 {
-		logger.Debug("minimax workspace models: fetch failed for %s: %v", key, errFetch)
+		logger.Debug("minimax 工作区模型：拉取失败（%s）：%v", key, errFetch)
 		entry.lastFail = now
 		c.entries[key] = entry
 		return entry.models

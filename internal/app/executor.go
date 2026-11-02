@@ -350,7 +350,7 @@ func emitStreamChunk(callbackID, streamID string, payload []byte) error {
 		"payload":   payload,
 	})
 	if errCall != nil {
-		logger.Debug("stream emit failed: %v", errCall)
+		logger.Debug("推送流数据失败：%v", errCall)
 	}
 	return errCall
 }
@@ -365,7 +365,7 @@ func closeStream(callbackID, streamID, failure string) {
 		payload["error"] = failure
 	}
 	if _, errCall := hostbridge.Call(callbackID, pluginabi.MethodHostStreamClose, payload); errCall != nil {
-		logger.Debug("stream close failed: %v", errCall)
+		logger.Debug("关闭流失败：%v", errCall)
 	}
 }
 

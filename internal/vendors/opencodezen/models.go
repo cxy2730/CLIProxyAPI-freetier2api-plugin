@@ -321,7 +321,7 @@ func parseModelsDevCatalog(body []byte) (modelsDevCatalog, error) {
 func (c *modelsDevCache) enrich(ctx context.Context, models []Model) {
 	catalog, errCatalog := c.fetch(ctx)
 	if errCatalog != nil {
-		logger.Info("opencodezen: models.dev catalog unavailable, keep fallback metadata: %v", errCatalog)
+		logger.Info("opencodezen：models.dev 目录不可用，保留兜底元数据：%v", errCatalog)
 		return
 	}
 	applyModelsDevCatalog(models, catalog)

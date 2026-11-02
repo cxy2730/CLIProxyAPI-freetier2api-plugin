@@ -108,7 +108,7 @@ func (p *Pool) Load(ctx context.Context, callbackID string, opts Options) ([]Acc
 			}
 			seen[uid] = true
 		}
-		if vendorCounts[vendor.ID()] >= core.MaxAccountsPerVendor {
+		if core.MaxAccountsPerVendor > 0 && vendorCounts[vendor.ID()] >= core.MaxAccountsPerVendor {
 			failures = append(failures, Failure{Entry: entry, Message: fmt.Sprintf("超过单供应商 %d 个账号上限", core.MaxAccountsPerVendor)})
 			continue
 		}
@@ -144,7 +144,7 @@ func (p *Pool) CheckVendorLimit(ctx context.Context, callbackID string, vendor c
 		}
 		count++
 	}
-	if count >= core.MaxAccountsPerVendor {
+	if core.MaxAccountsPerVendor > 0 && count >= core.MaxAccountsPerVendor {
 		return core.NewPluginError("account_limit_exceeded",
 			fmt.Sprintf("每个供应商最多添加 %d 个账号（%s 已达上限）", core.MaxAccountsPerVendor, vendor.Name()),
 			http.StatusBadRequest)

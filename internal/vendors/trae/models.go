@@ -317,22 +317,22 @@ func fetchCatalog(ctx context.Context, cred *Credential, cfg Config) (catalogEnt
 	client := hostbridge.Client(ctx, 15*time.Second)
 	resp, errDo := client.Do(req)
 	if errDo != nil {
-		logger.Info("trae catalog: %s request failed: %v", cfg.VendorID, errDo)
+		logger.Info("trae 目录：%s 请求失败：%v", cfg.VendorID, errDo)
 		return catalogEntry{}, false
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, errRead := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if resp.StatusCode != http.StatusOK {
-		logger.Info("trae catalog: %s status=%d body=%s", cfg.VendorID, resp.StatusCode, core.Truncate(string(raw), 512))
+		logger.Info("trae 目录：%s 状态=%d 响应体=%s", cfg.VendorID, resp.StatusCode, core.Truncate(string(raw), 512))
 		return catalogEntry{}, false
 	}
 	if errRead != nil {
-		logger.Info("trae catalog: %s read body failed: %v", cfg.VendorID, errRead)
+		logger.Info("trae 目录：%s 读取响应体失败：%v", cfg.VendorID, errRead)
 		return catalogEntry{}, false
 	}
 	var parsed catalogResponse
 	if errJSON := json.Unmarshal(raw, &parsed); errJSON != nil {
-		logger.Info("trae catalog: %s decode failed: %v body=%s", cfg.VendorID, errJSON, core.Truncate(string(raw), 512))
+		logger.Info("trae 目录：%s 解析失败：%v 响应体=%s", cfg.VendorID, errJSON, core.Truncate(string(raw), 512))
 		return catalogEntry{}, false
 	}
 
@@ -341,7 +341,7 @@ func fetchCatalog(ctx context.Context, cred *Credential, cfg Config) (catalogEnt
 	if len(entry.models) == 0 {
 		// 上游偶尔会整体降级（例如构建号低于门控时只回旧清单）。把条目摘要
 		// 打出来，才能区分「目录结构变了」和「版本号被降级」。
-		logger.Info("trae catalog: %s 过滤后为空（function=%s code=%s，原始 %d 条）: %s",
+		logger.Info("trae 目录：%s 过滤后为空（function=%s code=%s，原始 %d 条）：%s",
 			cfg.VendorID, cfg.Function, cfg.IDEVersionCode, len(parsed.ConfigInfoList),
 			summarizeCatalog(parsed.ConfigInfoList))
 		return catalogEntry{}, false

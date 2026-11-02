@@ -1640,14 +1640,14 @@ func claimGrowthReward(ctx context.Context, client *Client, credential *Credenti
 	if IsMPTaskCode(code) {
 		credit, energy, errClaim := client.ClaimRewardMP(ctx, credential, code)
 		if errClaim != nil {
-			logger.Debug("claim mp reward for %s failed: %v", code, errClaim)
+			logger.Debug("%s 领取 MP 奖励失败：%v", code, errClaim)
 			return 0, 0, errClaim
 		}
 		return credit, energy, nil
 	}
 	credit, energy, errClaim := client.ClaimReward(ctx, credential, code)
 	if errClaim != nil {
-		logger.Debug("claim reward for %s failed: %v", code, errClaim)
+		logger.Debug("%s 领取奖励失败：%v", code, errClaim)
 		return 0, 0, errClaim
 	}
 	return credit, energy, nil
@@ -1772,7 +1772,7 @@ func checkActivityStreak(ctx context.Context, client *Client, credential *Creden
 		return ""
 	}
 	if streak.Days == 0 {
-		logger.Error("activity: report succeeded but streak.days=0 (event may have been silently dropped)")
+		logger.Error("活动：上报成功但连续天数为 0（事件可能被上游静默丢弃）")
 		return ""
 	}
 	return fmt.Sprintf("连登天数 %d", streak.Days)
@@ -1917,7 +1917,7 @@ func runExpertChain(ctx context.Context, client *Client, credential *Credential,
 		}
 		requestID, errChat := client.DesktopChatWithRequestID(ctx, credential, expert.ID, "fast-model", conversationID)
 		if errChat != nil {
-			logger.Debug("expert chat failed for %s: %v", expert.ID, errChat)
+			logger.Debug("%s 专家对话失败：%v", expert.ID, errChat)
 			continue
 		}
 		if errReport := client.ReportDesktopEvents(ctx, credential,
@@ -2651,7 +2651,7 @@ func (c *Client) DailyCheckin(cred *Credential) (*CheckinResult, error) {
 		// 真实到账的签到报成失败，否则用户会重复点、历史里也记成 error。
 		if len(data) > 0 {
 			if errUnmarshal := json.Unmarshal(data, &payload); errUnmarshal != nil {
-				logger.Debug("workbuddy: 签到回执解析失败，按成功处理: %v", errUnmarshal)
+				logger.Debug("workbuddy：签到回执解析失败，按成功处理：%v", errUnmarshal)
 			}
 		}
 		return &CheckinResult{

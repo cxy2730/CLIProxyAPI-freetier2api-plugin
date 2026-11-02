@@ -15,9 +15,10 @@ If this project helps you, a Star would mean a lot.
 ## Features
 
 - Native integration with CLIProxyAPI's Anthropic `/v1/messages`, OpenAI `/v1/chat/completions`, and OpenAI `/v1/responses` endpoints without running a separate gateway service
-- Supports 15 free-tier provider instances across 8 vendor families (AutoClaw CN/Global and Raccoon included) with strict per-vendor credential isolation (capped at 10 accounts per provider)
+- Supports 15 free-tier provider instances across 8 vendor families (AutoClaw CN/Global and Raccoon included) with strict per-vendor credential isolation and no account cap
 - Dynamic model catalog discovery, custom model aliases, and cross-provider load balancing / failover
-- Built-in single-page Web console for OAuth device login, localhost callback paste, API Key import, account aliases and batch enable/disable/delete, quota tracking, check-in history, model toggling, and live logs
+- Built-in single-page Web console for OAuth device login, localhost callback paste, API Key import, account aliases, batch enable/disable/delete, quota tracking, check-in, model toggling, and settings (the task center and log page were removed; logs live in the host UI)
+- Request bodies pass through untouched: no prompt injection, replacement, or appending, and no rewriting of `system` / `tools` / sampling parameters
 - Automated daily check-in, automated daily tasks, and token keepalive refresh
 - Pure Go standard library implementation with zero third-party runtime dependencies
 
@@ -87,7 +88,7 @@ Once CLIProxyAPI is running, open the embedded console:
 http://<CPA-HOST>:8317/v0/resource/plugins/freetier/console
 ```
 
-- Click **"添加账号 ▾" (Add Account)**, choose a provider, and complete the browser OAuth flow or enter an API Key (up to 10 accounts per provider).
+- Click **"添加账号 ▾" (Add Account)**, choose a provider, and complete the browser OAuth flow or enter an API Key (no account cap).
 - When running on a remote host, Docker, or WSL where `127.0.0.1` callbacks (such as Trae or CodeArts) cannot reach the container directly, expand **"回调没到插件？粘贴回调链接"** in the login box and paste the full localhost callback URL from your browser's address bar.
 
 ### 2. Call the API
@@ -99,14 +100,14 @@ Call standard CLIProxyAPI endpoints using bare model names or `<vendor>:<model>`
 curl http://localhost:8317/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <CPA_API_KEY>" \
-  -d '{"model":"GLM-5.3","messages":[{"role":"user","content":"Hello!"}]}'
+  -d '{"model":"qodercn-GLM-5.3","messages":[{"role":"user","content":"Hello!"}]}'
 
 # Anthropic Messages
 curl http://localhost:8317/v1/messages \
   -H "Content-Type: application/json" \
   -H "anthropic-version: 2023-06-01" \
   -H "x-api-key: <CPA_API_KEY>" \
-  -d '{"model":"GLM-5.3-Flash","max_tokens":1024,"messages":[{"role":"user","content":"Hello!"}]}'
+  -d '{"model":"qodercn-GLM-5.3-Flash","max_tokens":1024,"messages":[{"role":"user","content":"Hello!"}]}'
 ```
 
 ### 3. Model Aliases & Cross-Provider Routing
@@ -131,8 +132,6 @@ Configure under `plugins.configs.freetier` in `config.yaml` (runtime settings ca
 | `auto_tasks` | bool | `true` | Enable automated daily tasks |
 | `codearts_credit_enabled` | bool | `false` | Explicitly enable credit-billed CodeArts inference; no automatic channel fallback. Refresh models after changing |
 | `checkin_history_limit` | int | `30` | Check-in records kept per account (`<=0` falls back to 30; expandable in the console) |
-| `prompt_mode` | string | `passthrough` | System prompt filter mode: `passthrough` / `custom` / `append` |
-| `model_name_tag` | string | `off` | Channel tag on model IDs: `off` (default) / `prefix` / `suffix`. When enabled, every vendor model gets a vendor prefix/suffix in its public ID (e.g. `zcodeglobal-GLM-5.3`) so same-name models can be pinned to a channel; tags are per-vendor, not per-account. Once tagged, same-name models are no longer merged across vendors. Takes effect after the host rebuilds its model registry (restart or credential reload; the console shows a restart-pending hint) |
 | `disabled_models` | string / list | empty | Disabled models (`vendor:model` or bare name) |
 | `extra_models` | string | empty | Additional model IDs to register (comma-separated) |
 | `state_dir` | string | `~/.freetier-plugin` | State and cache directory |

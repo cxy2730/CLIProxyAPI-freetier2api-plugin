@@ -91,7 +91,7 @@ func (s *Service) Registration() pluginapi.ManagementRegistrationResponse {
 		Resources: []pluginapi.ResourceRoute{{
 			Path:        "/console",
 			Menu:        id.DisplayName,
-			Description: "FreeTier 账号、任务与额度管理页。",
+			Description: "FreeTier 账号、额度与模型管理页。",
 		}},
 	}
 }
@@ -110,14 +110,7 @@ func (s *Service) managementRoutes(prefix string) []pluginapi.ManagementRoute {
 		{Method: "POST", Path: prefix + "/models/toggle", Description: "批量禁用/启用模型。"},
 		{Method: "POST", Path: prefix + "/models/alias", Description: "给模型设置/清除对外别名（跨供应商同名可合并路由）。"},
 		{Method: "POST", Path: prefix + "/models/refresh", Description: "从上游拉取模型清单并缓存。"},
-		{Method: "GET", Path: prefix + "/logs", Description: "读取插件日志（增量）。"},
-		{Method: "POST", Path: prefix + "/settings", Description: "更新插件运行期设置（自动签到、任务排程、提示词）。"},
-		{Method: "POST", Path: prefix + "/tasks/scan", Description: "扫描全部账号的待办任务。"},
-		{Method: "POST", Path: prefix + "/tasks/run", Description: "执行任务队列（账号内串行、账号间并发）。"},
-		{Method: "GET", Path: prefix + "/tasks/queue", Description: "查询任务队列进度。"},
-		{Method: "POST", Path: prefix + "/tasks/auto", Description: "对单个账号执行单个任务或一键完成。"},
-		{Method: "POST", Path: prefix + "/tasks/auto_all", Description: "在后台对全部账号依次执行一键完成，立即返回任务编号。"},
-		{Method: "GET", Path: prefix + "/tasks/auto_all/status", Description: "查询后台一键完成的进度与结果。"},
+		{Method: "POST", Path: prefix + "/settings", Description: "更新插件运行期设置（每日自动签到、签到后自动任务）。"},
 		{Method: "GET", Path: prefix + "/school/status", Description: "开学季活动状态。"},
 		{Method: "POST", Path: prefix + "/keepalive", Description: "手动执行 token 保活。"},
 		{Method: "POST", Path: prefix + "/plans/preview", Description: "查询账号当前可领套餐与人机验证控件参数。"},
@@ -128,12 +121,6 @@ func (s *Service) managementRoutes(prefix string) []pluginapi.ManagementRoute {
 		{Method: "GET", Path: prefix + "/login/captcha-config", Description: "读取登录前的人机验证控件参数（阿里云场景 ID/region/prefix）。"},
 		{Method: "POST", Path: prefix + "/login/sms/send", Description: "发送短信验证码（支持手机验证码登录的供应商）。"},
 		{Method: "POST", Path: prefix + "/login/sms/verify", Description: "用短信验证码完成登录并保存账号。"},
-	}
-	for _, spec := range s.tasks.Catalog().ManualSpecs() {
-		if spec.Route == "" {
-			continue
-		}
-		routes = append(routes, pluginapi.ManagementRoute{Method: "POST", Path: prefix + spec.Route, Description: spec.Description})
 	}
 	return routes
 }
@@ -164,9 +151,6 @@ func (s *Service) Handle(request []byte) ([]byte, error) {
 
 	case method == http.MethodGet && matchesManagementPath(rpc.Path, id.ID, "/vendors"):
 		return core.OKEnvelope(JSONResponse(http.StatusOK, s.buildVendorsPayload()))
-
-	case method == http.MethodGet && matchesManagementPath(rpc.Path, id.ID, "/logs"):
-		return core.OKEnvelope(JSONResponse(http.StatusOK, s.buildLogsPayload(rpc)))
 
 	case method == http.MethodPost && matchesManagementPath(rpc.Path, id.ID, "/checkin"):
 		return core.OKEnvelope(s.handleCheckinRequest(rpc))
@@ -210,20 +194,14 @@ func (s *Service) Handle(request []byte) ([]byte, error) {
 	case method == http.MethodPost && matchesManagementPath(rpc.Path, id.ID, "/keepalive"):
 		return core.OKEnvelope(s.handleKeepaliveRequest(rpc))
 
-	case method == http.MethodPost && matchesManagementPath(rpc.Path, id.ID, "/tasks/scan"):
-		return core.OKEnvelope(s.handleTasksScan(rpc))
-	case method == http.MethodPost && matchesManagementPath(rpc.Path, id.ID, "/tasks/run"):
-		return core.OKEnvelope(s.handleTasksRun(rpc))
-	case method == http.MethodGet && matchesManagementPath(rpc.Path, id.ID, "/tasks/queue"):
-		return core.OKEnvelope(s.handleTasksQueue(rpc))
-	case method == http.MethodPost && matchesManagementPath(rpc.Path, id.ID, "/tasks/auto"):
-		return core.OKEnvelope(s.handleTasksAuto(rpc))
-	case method == http.MethodPost && matchesManagementPath(rpc.Path, id.ID, "/tasks/auto_all"):
-		return core.OKEnvelope(s.handleTasksAutoAll(rpc))
-	case method == http.MethodGet && matchesManagementPath(rpc.Path, id.ID, "/tasks/auto_all/status"):
-		return core.OKEnvelope(s.handleTasksAutoAllStatus(rpc))
 	case method == http.MethodGet && matchesManagementPath(rpc.Path, id.ID, "/school/status"):
 		return core.OKEnvelope(s.handleSchoolStatus(rpc))
+
+	case method == http.MethodPost && matchesManagementPath(rpc.Path, id.ID, "/tasks/autoall"):
+		return core.OKEnvelope(s.handleTasksAutoAllStart(rpc))
+
+	case method == http.MethodGet && matchesManagementPath(rpc.Path, id.ID, "/tasks/autoall/status"):
+		return core.OKEnvelope(s.handleTasksAutoAllStatus(rpc))
 
 	case method == http.MethodPost && matchesManagementPath(rpc.Path, id.ID, "/plans/preview"):
 		return core.OKEnvelope(s.handlePlansPreview(rpc))
@@ -242,16 +220,6 @@ func (s *Service) Handle(request []byte) ([]byte, error) {
 	case method == http.MethodPost && matchesManagementPath(rpc.Path, id.ID, "/login/sms/verify"):
 		return core.OKEnvelope(s.handleLoginSMSVerify(rpc))
 	}
-	if method == http.MethodPost {
-		if suffix, okSuffix := managementSuffix(rpc.Path, id.ID); okSuffix {
-			for _, spec := range s.tasks.Catalog().ManualSpecs() {
-				if spec.Route != "" && suffix == spec.Route {
-					return core.OKEnvelope(s.handleScheduledRun(rpc, spec.Kind))
-				}
-			}
-		}
-	}
-
 	return core.OKEnvelope(JSONResponse(http.StatusNotFound, map[string]any{
 		"error": "not found", "path": rpc.Path, "method": method,
 	}))

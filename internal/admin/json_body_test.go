@@ -70,8 +70,6 @@ func TestManagementHandlersRejectMalformedJSON(t *testing.T) {
 		"settings":        service.handleSettingsRequest,
 		"plans/preview":   service.handlePlansPreview,
 		"plans/claim":     service.handlePlansClaim,
-		"tasks/run":       service.handleTasksRun,
-		"tasks/auto":      service.handleTasksAuto,
 		"models/toggle":   service.modelToggleHandler,
 		"models/alias":    service.modelAliasHandler,
 		"login/callback":  service.handleLoginCallbackRequest,

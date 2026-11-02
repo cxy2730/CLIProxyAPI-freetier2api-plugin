@@ -262,19 +262,11 @@ func TestConsolePageNeverCallsWithoutKey(t *testing.T) {
 		t.Fatal("console page must load the first screen serially (vendors first)")
 	}
 
-	// 定时器是失败放大器：只能在密钥验证通过（authReady）之后启动。
-	if !strings.Contains(page, "if (authReady && box && box.checked)") {
-		t.Fatal("log polling must require a verified key (authReady)")
-	}
-	if strings.Contains(page, "if (event.target.checked && !stopped)") {
-		t.Fatal("log polling must not start from the raw stopped flag")
-	}
-
-	// 3) 鉴权失败必须一次就停掉全部定时器，不能只停日志。
+	// 3) 鉴权失败必须一次就停掉全部自动请求（登录轮询 + 页面轮询）。
 	for _, literal := range []string{
 		"function haltOnAuthFailure(status) {",
 		"stopLoginPolling();",
-		"if (queueTimer) { clearInterval(queueTimer); queueTimer = null; }",
+		"stopped = true;",
 	} {
 		if !strings.Contains(page, literal) {
 			t.Fatalf("console page is missing the auth-failure stop %q", literal)
@@ -305,11 +297,9 @@ func TestConsolePageDoesNotUnwrapHostBody(t *testing.T) {
 	}
 	// 业务字段必须是从响应顶层直接取的。
 	for _, field := range []string{
-		"status.accounts",       // 账号列表
-		"payload.entries",       // 日志
-		"payload.pending_count", // 扫描结果
-		"data.models",           // 模型清单
-		"data.results",          // 额度/任务结果
+		"status.accounts", // 账号列表
+		"data.models",     // 模型清单
+		"data.results",    // 额度/任务结果
 	} {
 		if !strings.Contains(page, field) {
 			t.Fatalf("console page must read %q directly from the response body", field)
@@ -376,7 +366,7 @@ func TestConsolePageIsSingleScrollLayout(t *testing.T) {
 		}
 	}
 	// 各区块都必须在页面上直接可见（不带 hidden）。
-	for _, section := range []string{"账号", "额度", "模型", "任务", "设置", "运行日志"} {
+	for _, section := range []string{"账号", "额度", "模型", "设置"} {
 		if !strings.Contains(page, section) {
 			t.Fatalf("console page is missing the %q section", section)
 		}
@@ -394,9 +384,6 @@ func TestConsolePageIsSingleScrollLayout(t *testing.T) {
 	if strings.Contains(page, `id="queue"`) {
 		t.Fatal("queue progress must be merged into the per-account task lists")
 	}
-	if !strings.Contains(page, `id="queueProgress"`) {
-		t.Fatal("console page must show a compact queue progress summary")
-	}
 
 	// 额度不再单独占一张表：结果并入账号表的「剩余 / 总额」与「剩余率」两列。
 	if strings.Contains(page, `id="quotas"`) {
@@ -410,20 +397,6 @@ func TestConsolePageIsSingleScrollLayout(t *testing.T) {
 // TestConsolePageHasBulkTaskButton 验证「一键完成」是批量按钮而非每账号一个。
 //
 // 逐账号一个按钮在账号多时既难用也容易误点；统一成「全部账号依次执行」。
-func TestConsolePageHasBulkTaskButton(t *testing.T) {
-	page := Page("/plugins/freetier")
-
-	if !strings.Contains(page, `id="btnAutoAll"`) {
-		t.Fatal("console page must expose a bulk task button")
-	}
-	if !strings.Contains(page, "/tasks/auto_all") {
-		t.Fatal("bulk task button must call the /tasks/auto_all endpoint")
-	}
-	// 表格里不应再逐账号渲染「一键完成」按钮（签到按钮保留）。
-	if strings.Contains(page, `el("button", "一键完成"`) {
-		t.Fatal("per-account task buttons must be replaced by the bulk button")
-	}
-}
 
 // TestConsolePageStopsPollingOnAuthFailure 验证鉴权失败会停止轮询。
 //
@@ -460,31 +433,69 @@ func TestConsolePageIsStaticAndSelfContained(t *testing.T) {
 	}
 }
 
-// TestTaskScheduleFoldedByDefault 验证「任务排程」默认折叠。
+// TestSettingsKeepsOnlyTwoToggles 验证运行期设置只剩两个开关。
 //
-// 排程有十来个任务族，展开后会把设置卡片撑得很长；默认折叠是刻意的交互
-// 选择。这里同时锁住三件事：用原生 <details>（无JS 也能开合）、默认不带
-// open 属性、以及折叠时仍能在 summary 上看到当前排程摘要。
-func TestTaskScheduleFoldedByDefault(t *testing.T) {
+// 2026-11-02 用户要求：运行期设置只保留「每日自动签到」与「签到后自动跑
+// 后续任务（开学季 / 连登奖励）」。执行时间与任务排程不再暴露给用户——
+// 时间沿用已存值，排程沿用默认值，保存时不提交这两个字段，后端对缺省
+// 字段不做改动，因此不会清掉既有配置。
+func TestSettingsKeepsOnlyTwoToggles(t *testing.T) {
 	page := Page("/plugins/freetier")
 
-	if !strings.Contains(page, `<details class="fold" id="scheduleFold">`) {
-		t.Fatal(`任务排程未用 <details class="fold" id="scheduleFold"> 包裹`)
+	for _, marker := range []string{
+		`id="setAutoCheckin"`,
+		`id="setAutoTasks"`,
+		"每日自动签到",
+		"签到后自动跑后续任务（开学季 / 连登奖励）",
+	} {
+		if !strings.Contains(page, marker) {
+			t.Fatalf("运行期设置缺少 %q", marker)
+		}
 	}
-	if strings.Contains(page, `<details class="fold" id="scheduleFold" open`) {
-		t.Fatal("任务排程必须默认折叠，不应带 open 属性")
+	for _, gone := range []string{
+		`id="setCheckinAt"`,
+		`id="taskSchedule"`,
+		`id="scheduleFold"`,
+		"任务排程",
+		"执行时间",
+	} {
+		if strings.Contains(page, gone) {
+			t.Fatalf("运行期设置不应再出现 %q", gone)
+		}
 	}
-	// summary 只留标题：曾经在这里拼「每日签到 9,21 · 猫猫旅行 9,21 · ...」，
-	// 默认折叠时也占满一行，且排程改动后这段摘要极易与真实配置不一致。
-	if strings.Contains(page, "scheduleSummary") || strings.Contains(page, "foldcount") {
-		t.Error("任务排程的折叠标题不应再展示排程明细摘要")
+	// 保存只提交两个开关。
+	if strings.Contains(page, "task_schedules") {
+		t.Error("保存设置不应再提交 task_schedules（会让后端按空表覆盖排程）")
 	}
-	if !strings.Contains(page, "<summary>任务排程</summary>") {
-		t.Error("任务排程折叠标题应为纯文本「任务排程」")
+	if strings.Contains(page, `getElementById("setCheckinAt")`) {
+		t.Error("保存设置不应再读执行时间输入框")
 	}
-	// 折叠箭头放大到 22px（原 11px），避免在大标题行里点不准。
-	if !strings.Contains(page, `content: "\25B8"; font-size: 22px`) {
-		t.Error("任务排程折叠箭头未放大到 22px")
+}
+
+// TestVendorMenuShowsAllVendors 验证「添加账号」下拉能完整看到全部渠道。
+//
+// 供应商有 16 个，菜单原来既没有 max-height 也没有滚动，绝对定位溢出卡片
+// 的部分会被后续 .card（带 backdrop-filter，自成层叠上下文）盖住，尾部
+// 渠道永远看不到也滚不到。这里锁住三件事：限高 + 纵向滚动、展开时抬升
+// 所在卡片、两个下拉都走同一个抬升函数。
+func TestVendorMenuShowsAllVendors(t *testing.T) {
+	page := Page("/plugins/freetier")
+
+	for _, marker := range []string{
+		"min-width: 210px; max-height: min(72vh, 560px)",
+		"overflow: hidden auto",
+		"background: var(--pop)",
+		"overscroll-behavior: contain",
+		".card.menu-open { position: relative; z-index: 30; }",
+		"function liftMenuCard(",
+	} {
+		if !strings.Contains(page, marker) {
+			t.Fatalf("渠道下拉缺少 %q", marker)
+		}
+	}
+	// 两个下拉（添加账号 / 模型列）都要抬升所在卡片，否则跨卡片溢出仍被遮。
+	if got := strings.Count(page, "liftMenuCard(menu, "); got < 4 {
+		t.Fatalf("下拉展开/收起都应调用 liftMenuCard，当前只调用了 %d 处", got)
 	}
 }
 
@@ -692,7 +703,6 @@ func TestConsolePageSettingsLabels(t *testing.T) {
 		"每日自动签到",
 		// 开关只影响签到后的两个后续任务，标签必须写清范围，不能叫「每日自动任务」。
 		"签到后自动跑后续任务（开学季 / 连登奖励）",
-		"MAX_ACCOUNTS_PER_VENDOR = 10",
 	} {
 		if !strings.Contains(page, required) {
 			t.Fatalf("console page missing %q", required)
@@ -708,17 +718,6 @@ func TestConsolePageSettingsLabels(t *testing.T) {
 // TestConsoleSettingsSyncsModelRegistryImmediately 锁定渠道标识保存后立即生效：
 // 响应带 model_registry_dirty 时复用 syncModelConfig 触发宿主重载，页面不再
 // 让用户「等模型清单刷新（或重启宿主）」。
-func TestConsoleSettingsSyncsModelRegistryImmediately(t *testing.T) {
-	page := Page("/plugins/freetier")
-	if !strings.Contains(page, "if (data && data.model_registry_dirty) { syncModelConfig(); }") {
-		t.Fatal("保存设置后必须按 model_registry_dirty 触发 syncModelConfig")
-	}
-	for _, stale := range []string{"等模型清单刷新", "给各供应商的模型名自动加渠道标识"} {
-		if strings.Contains(page, stale) {
-			t.Fatalf("渠道标识即时生效，页面不应再有旁注：%s", stale)
-		}
-	}
-}
 
 // TestConsoleAccountAliasReusesInlineEditor 锁定账号别名的接线与「只有一份」。
 //
@@ -826,24 +825,6 @@ func TestConsoleBenefitsUseExistingCheckinEntry(t *testing.T) {
 // 扫描表有 5 列、窄屏必然超宽。如果让 .card 承担 overflow-x，滚动会连卡片标题一起
 // 横向卷走（320px 时标题左移 157px），看起来像标题被裁掉。滚动容器必须是只包表格的
 // .table-scroll，卡片与标题保持不动。
-func TestConsoleScanTableScrollsInsideWrapper(t *testing.T) {
-	page := Page("/plugins/freetier")
-
-	// 滚动容器挂在表格外层，而不是卡片上。
-	if !strings.Contains(page, "#accounts, #scans .table-scroll") {
-		t.Fatal("narrow-screen overflow must be carried by .table-scroll, not .card")
-	}
-	// 滚动容器的直接子节点必须是表格本身，而不是整张卡片。
-	// 只断言 "table-scroll" 字样出现过是不够的——把 card（含 <h2>）包进滚动容器
-	// 同样会出现这个字符串，而那正是这段要防的回归，所以断言必须锁住嵌套关系。
-	if !strings.Contains(page, `el("div", null, "table-scroll")).appendChild(table)`) {
-		t.Fatal("the .table-scroll wrapper must directly contain the table, not the whole card")
-	}
-	// 账号表自带横滚，不应被一并套进新容器（否则两处规则重叠、边框错位）。
-	if strings.Contains(page, "#accounts .table-scroll") {
-		t.Fatal("accounts table already scrolls on its own; do not wrap it again")
-	}
-}
 
 // TestConsoleAccountAndModelStatusLabels 锁定控制台账号与模型列表的状态与操作文案及排序：
 // 正常 -> 启用，禁用/已禁用 -> 停用，批量按钮为「停用选中」，移除旧提示，且账号列表按「启用在上停用在下」排序。
@@ -881,33 +862,39 @@ func TestConsoleAccountAndModelStatusLabels(t *testing.T) {
 // 也报「全部账号执行完毕」；「完成 0」既可能是渠道不支持也可能是卡住，
 // 读者无从分辨。这里要求：按 done/skip/error 分级着色（中断不落绿）、
 // 失败与跳过带上游原因、明细多时常驻、横幅限高可滚动。
-func TestConsoleAutoAllReportsOutcomeHonestly(t *testing.T) {
+
+// TestConsoleAutoAllCoversEveryAccount 锁定「一键任务」的语义：
+// 未勾选时提交全部渠道的全部账号，进度用快照轮询，结果只按上游 message 汇总。
+func TestConsoleAutoAllCoversEveryAccount(t *testing.T) {
 	page := Page("/plugins/freetier")
 
 	for _, want := range []string{
-		// 分级着色：有失败给红、中断给黄、只有真跑出结果才给绿。
-		`var kind = errTotal ? "err" : (result.cancelled ? "warn" : (doneTotal ? "ok" : "warn"));`,
-		// 跳过与失败分开统计，不再把 skipped 混进「完成」。
-		`if (entry.skipped) {`,
-		`skipAccounts++;`,
-		// 「完成 0」只保留一条归因：一条结果都没返回；其余原因来自上游 message。
-		`note = (!done && !errs && !skips) ? "（该账号没有返回任何任务）" : "";`,
-		// 明细超过三行时常驻，不再 5 秒消失。
-		`banner(kind, text, lines.length > 3 ? 0 : 8000);`,
-		// 横幅限高，390px 视口下不挤掉账号表格。
-		`max-height: min(38vh, 180px); overflow-y: auto; overscroll-behavior: contain;`,
+		`<button class="act" id="btnAutoAll">一键任务</button>`,
+		`runAutoAll(selectedAccountIDs(), this)`,
+		`api("POST", "/tasks/autoall", { account_ids: accountIDs })`,
+		`api("GET", "/tasks/autoall/status")`,
+		`err && err.status === 409`, // 已有作业在跑时接着看进度，不报错
+		`row.skipped`,               // 账号级「未执行」要单独说明
+		`it.status === "error"`,     // 失败按上游 message 报
 	} {
 		if !strings.Contains(page, want) {
-			t.Fatalf("console page missing expected auto-all behavior: %s", want)
+			t.Fatalf("console page is missing the one-click task wiring (%s)", want)
 		}
 	}
 
-	for _, forbidden := range []string{
-		// 无条件报成功的老收尾。
-		`banner("ok", "全部账号执行完毕`,
-	} {
-		if strings.Contains(page, forbidden) {
-			t.Fatalf("console page still reports success unconditionally: %s", forbidden)
+	// 不允许在前端臆测结论：领没领到由上游 message 决定。
+	for _, bad := range []string{"已全部领过", "任务已全部完成"} {
+		if strings.Contains(page, bad) {
+			t.Fatalf("one-click task must not assert %q", bad)
 		}
+	}
+
+	// 被中断时上游 message 优先于逐账号明细，且不能落绿。
+	if !strings.Contains(page, `if (result.cancelled) { banner("warn", "一键任务被中断：`) {
+		t.Fatal("cancelled 必须先把上游 message 摆出来，并落 warn")
+	}
+	// 局部变量 head 会遮蔽 document.head，按 #75 复审要求改名。
+	if strings.Contains(page, "var head = rows.length") {
+		t.Fatal("summaryHead 不能再叫 head")
 	}
 }

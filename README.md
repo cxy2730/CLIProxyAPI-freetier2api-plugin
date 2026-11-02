@@ -15,9 +15,10 @@
 ## 功能特性
 
 - 复用宿主 Anthropic `/v1/messages`、OpenAI `/v1/chat/completions` 与 OpenAI `/v1/responses` 接口，无需额外部署独立网关
-- 支持 8 大体系共 15 个国内外免费额度供应商实例（AutoClaw 国内/国际与小浣熊已接入），凭证严格按供应商隔离（单供应商上限 10 个账号）
+- 支持 8 大体系共 15 个国内外免费额度供应商实例（AutoClaw 国内/国际与小浣熊已接入），凭证严格按供应商隔离，账号数量不设上限
 - 模型清单动态探测、自定义模型别名与跨供应商同名模型自动负载均衡/故障转移
-- 内嵌单页 Web 控制台：支持 OAuth 设备授权 / 本地回调粘贴 / API Key 添加账号、账号自定义别名、账号批量启停/删除、额度可视化、签到历史回溯、模型启停与运行日志
+- 内嵌单页 Web 控制台：OAuth 设备授权 / 本地回调粘贴 / API Key 添加账号、账号别名、批量启停删除、额度可视化、签到、模型启停与设置（任务中心与运行日志页已移除，日志统一走宿主官方页）
+- 请求体原样透传：不注入、不替换、不追加任何提示词，也不改写 `system` / `tools` / 采样参数
 - 支持每日自动签到、每日自动任务与 Token 自动续期保活
 - 纯 Go 标准库实现，零第三方运行时依赖
 
@@ -87,31 +88,31 @@ cd CLIProxyAPI-freetier2api-plugin
 http://<CPA地址>:8317/v0/resource/plugins/freetier/console
 ```
 
-- 点击 **「添加账号 ▾」** 选择对应供应商，按提示在浏览器完成 OAuth 授权或填入 API Key（每个供应商最多可添加 10 个账号）。
+- 点击 **「添加账号 ▾」** 选择对应供应商，按提示在浏览器完成 OAuth 授权或填入 API Key（账号数量不设上限）。
 - 若在远程服务器 / Docker / WSL 部署，使用 Trae 或 CodeArts 登录时浏览器停留在 `127.0.0.1` 回调页，展开登录框下方的 **「回调没到插件？粘贴回调链接」**，将完整回调 URL 粘贴提交即可。
 
 ### 2. 调用 API
 
-账号添加后即可通过 CLIProxyAPI 标准接口调用（支持裸模型名或 `<vendor>:<model>` 前缀指定供应商）：
+账号添加后即可通过 CLIProxyAPI 标准接口调用。模型对外 ID 固定为 `<供应商前缀>-<上游模型名>`，前缀写死不可配置，例如 `qodercn-GLM-5.3`、`workbuddyglobal-deepseek-v4.1-flash`，完整清单用 `GET /v1/models` 取：
 
 ```bash
 # OpenAI Chat Completions
 curl http://localhost:8317/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <CPA_API_KEY>" \
-  -d '{"model":"GLM-5.3","messages":[{"role":"user","content":"你好！"}]}'
+  -d '{"model":"qodercn-GLM-5.3","messages":[{"role":"user","content":"你好！"}]}'
 
 # Anthropic Messages
 curl http://localhost:8317/v1/messages \
   -H "Content-Type: application/json" \
   -H "anthropic-version: 2023-06-01" \
   -H "x-api-key: <CPA_API_KEY>" \
-  -d '{"model":"GLM-5.3-Flash","max_tokens":1024,"messages":[{"role":"user","content":"你好！"}]}'
+  -d '{"model":"qodercn-GLM-5.3-Flash","max_tokens":1024,"messages":[{"role":"user","content":"你好！"}]}'
 ```
 
 ### 3. 模型别名与跨供应商路由
 
-在控制台「模型」表格中点击 **「模型 ID」** 列的名称或 `✎` 图标即可设置对外模型别名。将不同供应商的模型设为同一别名（例如把多家供应商的旗舰模型统一设为 `coding-max`），宿主会自动合并并在多个供应商间负载均衡与故障转移。开启 `model_name_tag` 后对外 ID 带渠道标识，同名模型不再跨供应商合并。
+在控制台「模型」表格中点击 **「模型 ID」** 列的名称或 `✎` 图标即可设置对外模型别名。将不同供应商的模型设为同一别名（例如把多家供应商的旗舰模型统一设为 `coding-max`），宿主会自动合并并在多个供应商间负载均衡与故障转移。
 
 ### 4. 账号别名
 
@@ -131,8 +132,6 @@ curl http://localhost:8317/v1/messages \
 | `auto_tasks` | bool | `true` | 每日自动任务开关 |
 | `codearts_credit_enabled` | bool | `false` | 明确开启 CodeArts 积分推理（消耗账号积分）；默认福利通道，失败不自动切换。修改后刷新模型目录 |
 | `checkin_history_limit` | int | `30` | 每个账号保留的签到历史条数（`<=0` 用默认值 30；控制台签到列可展开查看） |
-| `prompt_mode` | string | `passthrough` | 提示词防御模式：`passthrough`（透传）/ `custom`（替换）/ `append`（追加） |
-| `model_name_tag` | string | `off` | 模型名渠道标识：`off`（默认）/ `prefix` / `suffix`。开启后各供应商的模型对外 ID 自动带渠道前缀或后缀（如 `zcodeglobal-GLM-5.3`），同名模型可按渠道定点选择；标识按供应商统一生成、不区分账号。改动后需宿主重建模型注册表生效（重启或等凭据重载，控制台会提示「待生效」） |
 | `disabled_models` | string / list | 空 | 禁用模型列表（支持 `vendor:model` 或裸名，与控制台勾选合并） |
 | `extra_models` | string | 空 | 额外补充注册的模型名（逗号分隔） |
 | `state_dir` | string | `~/.freetier-plugin` | 状态与缓存目录（若存在 `~/.cli-proxy-api` 则默认使用其下 `freetier` 子目录） |

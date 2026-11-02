@@ -174,7 +174,7 @@ func (v *adapter) ModelsForAuth(ctx context.Context, cred *core.Credential) ([]p
 	if errModels != nil {
 		// 探测失败返回空清单而不是报错：宿主会因为空清单跳过该凭证。
 		// 必须用 Info：宿主日志默认 info 级别，Debug 会被完全吞掉。
-		logger.Info("autoclaw: model probe failed: %v", errModels)
+		logger.Info("autoclaw：模型探测失败：%v", errModels)
 		return nil, nil
 	}
 	return v.modelsToPluginAPI(models), nil

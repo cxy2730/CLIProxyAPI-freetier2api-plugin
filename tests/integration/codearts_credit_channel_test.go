@@ -135,7 +135,7 @@ func TestCodeArtsCreditCatalogUsesOnlyBuiltinModels(t *testing.T) {
 			t.Fatal(err)
 		}
 		ids := modelIDSet(t, response.Models)
-		if len(ids) != 1 || !ids["deepseek-v4.1-flash-1017"] {
+		if len(ids) != 1 || !ids["codearts-deepseek-v4.1-flash-1017"] {
 			t.Fatalf("credit catalog must not contain guessed or benefit-only models: %v", ids)
 		}
 	}

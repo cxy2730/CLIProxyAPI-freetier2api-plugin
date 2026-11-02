@@ -624,7 +624,7 @@ func (v *adapter) fetchPlanSnapshot(ctx context.Context, cred *Credential) planS
 	if errPreview != nil || len(offered) == 0 {
 		marketing, errMarketing = queryMarketingTouch(ctx, cred)
 		if errMarketing != nil {
-			logger.Info("zcode marketing/touch 失败: %v", errMarketing)
+			logger.Info("zcode 营销触达失败：%v", errMarketing)
 		}
 	}
 	snapshot.offered, snapshot.errPreview = resolveOffers(offered, errPreview, marketing, errMarketing)
@@ -1362,7 +1362,7 @@ func (v *adapter) ensureActivation(ctx context.Context, cred *Credential) string
 	for _, element := range activationElements {
 		if err := postActivationEvent(ctx, cred, activationEventBody(element, cred, userID)); err != nil {
 			v.activations.forget(userID)
-			logger.Info("zcode 激活上报失败 (%s): %v", element, err)
+			logger.Info("zcode 激活上报失败（%s）：%v", element, err)
 			return err.Error()
 		}
 	}

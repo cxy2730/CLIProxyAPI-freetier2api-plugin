@@ -40,10 +40,10 @@ func TestAppsHaveIsolatedRegistryAndState(t *testing.T) {
 		t.Fatalf("apply second: %v", errApply)
 	}
 	first.MutateState(func(state *state.State) {
-		state.PromptMode = "custom"
+		state.DisabledModels = []string{"vendor:model"}
 	})
-	if got := second.SnapshotState().PromptMode; got != "" {
-		t.Fatalf("second app saw first app state: %q", got)
+	if got := second.SnapshotState().DisabledModels; len(got) != 0 {
+		t.Fatalf("second app saw first app state: %#v", got)
 	}
 }
 
@@ -150,14 +150,12 @@ func TestAppsIsolateVendorConfig(t *testing.T) {
 		"vendor_base_url": "http://first.test",
 		"vendor_ua":       "UA-First/1.0",
 	}
-	firstCfg.PromptMode = "custom"
 	secondCfg := app.DefaultConfig()
 	secondCfg.StateDir = t.TempDir()
 	secondCfg.Raw = map[string]string{
 		"vendor_base_url": "http://second.test",
 		"vendor_ua":       "UA-Second/2.0",
 	}
-	secondCfg.PromptMode = "append"
 	if errApply := first.ApplyConfig(firstCfg); errApply != nil {
 		t.Fatalf("apply first: %v", errApply)
 	}
@@ -165,10 +163,10 @@ func TestAppsIsolateVendorConfig(t *testing.T) {
 		t.Fatalf("apply second: %v", errApply)
 	}
 
-	if firstVendor.baseURL != "http://first.test" || firstVendor.ua != "UA-First/1.0" || firstVendor.prompt != "custom" {
+	if firstVendor.baseURL != "http://first.test" || firstVendor.ua != "UA-First/1.0" {
 		t.Fatalf("first vendor config = %+v", firstVendor)
 	}
-	if secondVendor.baseURL != "http://second.test" || secondVendor.ua != "UA-Second/2.0" || secondVendor.prompt != "append" {
+	if secondVendor.baseURL != "http://second.test" || secondVendor.ua != "UA-Second/2.0" {
 		t.Fatalf("second vendor config = %+v", secondVendor)
 	}
 	if firstVendor == secondVendor {

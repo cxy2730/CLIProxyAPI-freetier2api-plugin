@@ -69,7 +69,7 @@ func (s *Service) handleLoginCallbackRequest(req pluginapi.ManagementRequest) pl
 			payload["ok"] = false
 			payload["status"] = string(pluginapi.AuthLoginStatusError)
 			payload["message"] = "登录已完成，但保存凭证失败：" + errSave.Error()
-			logger.Error("login callback persist failed (state=%s): %v", body.State, errSave)
+			logger.Error("登录回调落盘失败（state=%s）：%v", body.State, errSave)
 			return JSONResponse(http.StatusOK, payload)
 		}
 		payload["auth_id"] = result.Auth.FileName
@@ -78,7 +78,7 @@ func (s *Service) handleLoginCallbackRequest(req pluginapi.ManagementRequest) pl
 
 	// 落盘成功时 saveAuthFile 已经记过一笔，这里只补非成功分支的审计行。
 	if status != pluginapi.AuthLoginStatusSuccess {
-		logger.Info("login callback handled (state=%s status=%s)", body.State, status)
+		logger.Info("登录回调已处理（state=%s 状态=%s）", body.State, status)
 	}
 	return JSONResponse(http.StatusOK, payload)
 }

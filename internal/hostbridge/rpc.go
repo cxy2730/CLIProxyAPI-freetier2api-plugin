@@ -160,7 +160,7 @@ func WaitForShutdown(diagEvery time.Duration) {
 		case <-done:
 			return
 		case <-ticker.C:
-			logger.Error("shutdown: waiting for in-flight host callbacks inflight=%d waited=%s (host callbacks are not cancelable)",
+			logger.Error("关闭：等待进行中的宿主回调（在途=%d 已等待=%s，宿主回调无法取消）",
 				Inflight(), time.Since(start).Round(time.Millisecond))
 		}
 	}

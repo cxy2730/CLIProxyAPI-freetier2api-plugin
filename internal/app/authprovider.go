@@ -81,7 +81,7 @@ func (a *App) handleAuthParse(request []byte) ([]byte, error) {
 		return nil, core.NewPluginError("credential_invalid", errCredential.Error(), http.StatusUnprocessableEntity)
 	}
 
-	logger.Info("parsed auth %s (vendor=%s)",
+	logger.Info("已解析授权 %s（供应商=%s）",
 		core.FirstNonEmpty(credential.LabelValue(), rpc.FileName, rpc.Path), vendor.ID())
 
 	auth, errAuth := buildAuthDataFor(vendor, credential, rpc.FileName, rpc.RawJSON)
@@ -221,11 +221,11 @@ func (a *App) handleAuthRefresh(request []byte) ([]byte, error) {
 	updated, refreshed, errRefresh := core.RefreshVendor(vendor, ctx, credential)
 	if errRefresh != nil {
 		if isCredentialRejected(errRefresh) {
-			logger.Error("auth refresh rejected for %s: %v", rpc.AuthID, errRefresh)
+			logger.Error("%s 的授权刷新被拒绝：%v", rpc.AuthID, errRefresh)
 			return nil, core.ToPluginError(errRefresh)
 		}
 		// 抖动或未知错误：保留原凭证，稍后重试。
-		logger.Debug("auth refresh deferred for %s: %v", rpc.AuthID, errRefresh)
+		logger.Debug("%s 的授权刷新延后：%v", rpc.AuthID, errRefresh)
 		auth, errData := a.refreshedAuthData(rpc, rpc.StorageJSON, credential)
 		if errData != nil {
 			return nil, errData
@@ -244,7 +244,7 @@ func (a *App) handleAuthRefresh(request []byte) ([]byte, error) {
 			storage = merged
 		}
 	}
-	logger.Info("auth refresh succeeded for %s (vendor=%s refreshed=%t)", rpc.AuthID, vendor.ID(), refreshed)
+	logger.Info("%s 授权刷新成功（供应商=%s 已刷新=%t）", rpc.AuthID, vendor.ID(), refreshed)
 	auth, errData := a.refreshedAuthData(rpc, storage, updated)
 	if errData != nil {
 		return nil, errData
@@ -420,7 +420,7 @@ func (a *App) handleAuthLoginStart(request []byte) ([]byte, error) {
 	if errStart != nil {
 		return nil, errStart
 	}
-	logger.Info("started login (vendor=%s)", vendor.ID())
+	logger.Info("已发起登录（供应商=%s）", vendor.ID())
 	return core.OKEnvelope(response)
 }
 
@@ -442,7 +442,7 @@ func (a *App) StartLogin(ctx context.Context, vendorID string, metadata map[stri
 	if errStart != nil {
 		return nil, errStart
 	}
-	logger.Info("started login via console (vendor=%s)", vendor.ID())
+	logger.Info("已发起控制台登录（供应商=%s）", vendor.ID())
 	return response, nil
 }
 
@@ -731,7 +731,7 @@ func (a *App) saveRefreshedCredential(ctx context.Context, callbackID string, ve
 		// SaveAuth 内部做 uid 归一，返回实际写给宿主的 JSON。
 		saved, errSave := hostbridge.SaveAuth(callbackID, name, payload)
 		if errSave != nil {
-			logger.Debug("keepalive %s: host.auth.save failed: %v", entry.Name, errSave)
+			logger.Debug("保活 %s：宿主授权保存失败：%v", entry.Name, errSave)
 		}
 		payload = saved
 	} else {
@@ -742,12 +742,12 @@ func (a *App) saveRefreshedCredential(ctx context.Context, callbackID string, ve
 	// 截断的 JSON。rename 在同一文件系统内是原子的，宿主只会看到旧版或新版。
 	tmp := targetPath + ".tmp"
 	if errWrite := os.WriteFile(tmp, payload, 0o600); errWrite != nil {
-		logger.Debug("keepalive %s: write credential file failed: %v", entry.Name, errWrite)
+		logger.Debug("保活 %s：写入凭证文件失败：%v", entry.Name, errWrite)
 		return
 	}
 	if errRename := os.Rename(tmp, targetPath); errRename != nil {
 		_ = os.Remove(tmp)
-		logger.Debug("keepalive %s: replace credential file failed: %v", entry.Name, errRename)
+		logger.Debug("保活 %s：替换凭证文件失败：%v", entry.Name, errRename)
 	}
 }
 

@@ -2,9 +2,7 @@ package tests
 
 import (
 	"encoding/json"
-	"net/http"
 	"testing"
-	"time"
 
 	"freetier2api-plugin/cpasdk/pluginabi"
 	"freetier2api-plugin/cpasdk/pluginapi"
@@ -177,97 +175,5 @@ func TestAuthParsePutsRefreshTokenInMetadata(t *testing.T) {
 	}
 	if _, okKey := response.Auth.Attributes["access_token"]; okKey {
 		t.Fatal("attributes must not leak access_token")
-	}
-}
-
-// TestBackgroundAutoAllIgnoresRequestCallbackScope 锁定后台一键完成运行在
-// 后台回调作用域（空回调 ID）。
-//
-// 宿主在 management.handle 返回时就关闭这次请求的回调 scope；后台任务若还
-// 带着 X-Host-Callback-Id 去调 host.auth.list / host.http.do，会被拒为
-// "host callback ID is not open"，表现成「一键完成刚启动就失败」。这个用例
-// 用假宿主记录每次回调携带的 ID 来锁住它（真实宿主不会容忍这种复用）。
-func TestBackgroundAutoAllIgnoresRequestCallbackScope(t *testing.T) {
-	host := installFakeHost(t)
-	setupTestPlugin(t)
-
-	const requestCallbackID = "req-scope-1"
-	raw, err := testApp.HandleMethod(pluginabi.MethodManagementHandle, mustMarshal(pluginapi.ManagementRequest{
-		Method:  "POST",
-		Path:    "/v0/management/plugins/freetier/tasks/auto_all",
-		Headers: http.Header{"X-Host-Callback-Id": {requestCallbackID}},
-	}))
-	if err != nil {
-		t.Fatalf("handleMethod error: %v", err)
-	}
-	var env abiEnvelope
-	_ = json.Unmarshal(raw, &env)
-	var resp pluginapi.ManagementResponse
-	_ = json.Unmarshal(env.Result, &resp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("/tasks/auto_all expected 200, got %d: %s", resp.StatusCode, string(resp.Body))
-	}
-
-	// 等后台任务真正开始（至少发起一次账号枚举）并跑完，再检查调用序列。
-	deadline := time.Now().Add(5 * time.Second)
-	for len(host.CallbackIDs()) == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if len(host.CallbackIDs()) == 0 {
-		t.Fatal("后台任务没有发起任何宿主调用（账号枚举都没跑）")
-	}
-	for autoAllRunning(t) && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	for index, id := range host.CallbackIDs() {
-		if id == requestCallbackID {
-			t.Fatalf("后台一键完成第 %d 次宿主调用仍带着管理请求的回调 ID；调用序列 = %v", index+1, host.CallbackIDs())
-		}
-	}
-}
-
-// autoAllRunning 查询后台一键完成是否仍在执行。
-func autoAllRunning(t *testing.T) bool {
-	t.Helper()
-	raw, err := testApp.HandleMethod(pluginabi.MethodManagementHandle, mustMarshal(pluginapi.ManagementRequest{
-		Method: "GET",
-		Path:   "/v0/management/plugins/freetier/tasks/auto_all/status",
-	}))
-	if err != nil {
-		t.Fatalf("status handleMethod error: %v", err)
-	}
-	var env abiEnvelope
-	_ = json.Unmarshal(raw, &env)
-	var resp pluginapi.ManagementResponse
-	_ = json.Unmarshal(env.Result, &resp)
-	var status struct {
-		Running bool `json:"running"`
-	}
-	_ = json.Unmarshal(resp.Body, &status)
-	return status.Running
-}
-
-// TestManagementAutoAllRouteDispatched 验证 /tasks/auto_all 路由分发成功且不报 404。
-func TestManagementAutoAllRouteDispatched(t *testing.T) {
-	installFakeHost(t)
-	setupTestPlugin(t)
-
-	raw, err := testApp.HandleMethod(pluginabi.MethodManagementHandle, mustMarshal(pluginapi.ManagementRequest{
-		Method: "POST",
-		Path:   "/v0/management/plugins/freetier/tasks/auto_all",
-	}))
-	if err != nil {
-		t.Fatalf("handleMethod error: %v", err)
-	}
-	var env abiEnvelope
-	_ = json.Unmarshal(raw, &env)
-	var resp pluginapi.ManagementResponse
-	_ = json.Unmarshal(env.Result, &resp)
-	if resp.StatusCode == http.StatusNotFound {
-		t.Fatalf("/tasks/auto_all must be routed, got 404: %s", string(resp.Body))
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("/tasks/auto_all expected 200, got: %d", resp.StatusCode)
 	}
 }

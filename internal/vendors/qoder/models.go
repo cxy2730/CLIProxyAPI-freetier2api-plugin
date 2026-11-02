@@ -45,7 +45,7 @@ func (i *modelIndex) replace(models []Model) map[string]string {
 			continue
 		}
 		if _, exists := byName[id]; exists {
-			logger.Info("qoder: duplicate model id %q (key %s), skipping", id, key)
+			logger.Info("qoder：模型 ID %q 重复（键 %s），已跳过", id, key)
 			continue
 		}
 		slugByKey[key] = id

@@ -148,7 +148,7 @@ func (s *Service) keepaliveOne(ctx context.Context, callbackID string, account *
 	refreshed, errRefresh := s.RefreshAccount(ctx, callbackID, account)
 	if errRefresh != nil {
 		result.Message = errRefresh.Error()
-		logger.Error("keepalive %s: %v", label, errRefresh)
+		logger.Error("保活 %s：%v", label, errRefresh)
 		return result
 	}
 	result.OK = true
@@ -157,6 +157,6 @@ func (s *Service) keepaliveOne(ctx context.Context, callbackID string, account *
 	} else {
 		result.Message = "凭证有效（未变更）"
 	}
-	logger.Info("keepalive %s: refreshed=%t", label, refreshed)
+	logger.Info("保活 %s：已刷新=%t", label, refreshed)
 	return result
 }

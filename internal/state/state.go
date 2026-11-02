@@ -113,12 +113,6 @@ type State struct {
 	AutoCheckin   *bool  `json:"auto_checkin,omitempty"`
 	AutoCheckinAt string `json:"auto_checkin_at,omitempty"`
 	AutoTasks     *bool  `json:"auto_tasks,omitempty"`
-	// PromptMode 是页面上改过的提示词过滤模式；空表示沿用 YAML 配置。
-	PromptMode string `json:"prompt_mode,omitempty"`
-	// ModelNameTag 是页面上改过的模型名渠道标识模式（off/prefix/suffix）；
-	// 空表示沿用 YAML 配置。
-	ModelNameTag string `json:"model_name_tag,omitempty"`
-
 	// TaskSchedules 是按任务族保存的整点小时列表（0-23）。
 	// 新代码只读写这个字段；下面五个字段仅用于读取旧状态并迁移。
 	TaskSchedules map[string][]int `json:"task_schedules,omitempty"`
@@ -230,7 +224,7 @@ func (s *Store) Load() (*State, error) {
 		// 但损坏的文件不能就地覆盖——它是唯一可能被手工救回的东西，
 		// 改名留存，下一次写入才不会把它抹掉。
 		quarantined := quarantine(path)
-		logger.Error("state file %s is corrupt, quarantined as %s, starting with empty state: %v", path, quarantined, errUnmarshal)
+		logger.Error("状态文件 %s 已损坏，已隔离为 %s，以空状态启动：%v", path, quarantined, errUnmarshal)
 		s.cache = New()
 		return s.cache, nil
 	}
@@ -399,7 +393,7 @@ func (s *Store) flush() {
 	}
 	if errSave := s.saveLocked(); errSave != nil {
 		// 保留 dirty：下一次 Mutate 或 Flush 会再试一次。
-		logger.Error("save state failed: %v", errSave)
+		logger.Error("保存状态失败：%v", errSave)
 		return
 	}
 	s.dirty = false
@@ -463,7 +457,7 @@ func backup(path string) {
 		return
 	}
 	if errWrite := os.WriteFile(bak, raw, 0o600); errWrite != nil {
-		logger.Error("backup state failed: %v", errWrite)
+		logger.Error("备份状态失败：%v", errWrite)
 	}
 }
 
@@ -471,7 +465,7 @@ func backup(path string) {
 func quarantine(path string) string {
 	target := fmt.Sprintf("%s.corrupt-%s", path, time.Now().Format("20060102-150405"))
 	if errRename := os.Rename(path, target); errRename != nil {
-		logger.Error("quarantine corrupt state failed: %v", errRename)
+		logger.Error("隔离损坏状态文件失败：%v", errRename)
 		return ""
 	}
 	return target

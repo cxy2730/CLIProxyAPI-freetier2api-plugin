@@ -3,7 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
-	"reflect"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -109,8 +109,18 @@ func TestRegistrationDeclaresRoutes(t *testing.T) {
 	if !found {
 		t.Fatalf("status route missing: %#v", registration.Routes)
 	}
-	if len(registration.Resources) != 1 || registration.Resources[0].Path != "/console" {
-		t.Fatalf("resources = %#v", registration.Resources)
+	// 控制台保留（账号、额度、模型、设置），任务中心与日志页已下线。
+	var console *pluginapi.ResourceRoute
+	for i := range registration.Resources {
+		if registration.Resources[i].Path == "/console" {
+			console = &registration.Resources[i]
+		}
+	}
+	if console == nil {
+		t.Fatalf("console resource missing: %#v", registration.Resources)
+	}
+	if console.Menu == "" || console.Description == "" {
+		t.Fatalf("console resource must declare menu/description: %#v", *console)
 	}
 }
 
@@ -146,6 +156,38 @@ func TestHandleStatusAndUnknownRoute(t *testing.T) {
 	}
 }
 
+func TestHandleServesConsolePage(t *testing.T) {
+	service := newService(t)
+	raw, err := service.Handle([]byte(`{"method":"GET","path":"/v0/resource/plugins/freetier/console"}`))
+	if err != nil {
+		t.Fatalf("handle console: %v", err)
+	}
+	var envelope struct {
+		Result struct {
+			StatusCode int                 `json:"StatusCode"`
+			Headers    map[string][]string `json:"Headers"`
+			Body       []byte              `json:"Body"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("decode envelope: %v (%s)", err, raw)
+	}
+	if envelope.Result.StatusCode != http.StatusOK {
+		t.Fatalf("console status = %d, want 200", envelope.Result.StatusCode)
+	}
+	page := string(envelope.Result.Body)
+	for _, want := range []string{"FreeTier 2API", "view-accounts", "view-settings"} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("console page missing %q", want)
+		}
+	}
+	for _, gone := range []string{"view-tasks", "view-logs", "/logs"} {
+		if strings.Contains(page, gone) {
+			t.Fatalf("console page still references %q", gone)
+		}
+	}
+}
+
 type stubTaskDeps struct {
 	deps stubDeps
 	pool *auth.Pool
@@ -169,40 +211,44 @@ func (s stubTaskDeps) State() state.State                { return s.deps.State()
 func (s stubTaskDeps) MutateState(fn func(*state.State)) { s.deps.MutateState(fn) }
 func (s stubTaskDeps) Now() time.Time                    { return time.Now() }
 
-// TestSettingsPayloadKeysMatchConsole 锁死「后端字段名 ↔ 页面字段名」的一致性。
-//
-// 真实事故：`/settings` 的字段名与页面提交的键曾经漂移过（后端改名、页面没跟），
-// 结果页面上的改动**根本存不进去**且没有任何报错。
-//
-// 编译期已经保证 Go 侧一致，但 HTML 是字符串，编译器看不见。这里把
-// settingsUpdateRequest 的每个 json tag 钉到页面上，防止再次漂移。
-func TestSettingsPayloadKeysMatchConsole(t *testing.T) {
-	page := Page("/plugins/freetier")
+// 一键任务的两个端点必须真的挂上：控制台按钮只认这两个路径，
+// 少一条就是「点了没反应」。
+func TestHandleAutoAllRoutes(t *testing.T) {
+	service := newService(t)
 
-	// 兼容旧版页面/脚本的固定字段：后端仍接受，但当前页面不再发送。
-	deprecated := map[string]bool{
-		"checkin_hours": true, "travel_hours": true, "activity_hours": true,
-		"keepalive_hours": true, "blackcat_hours": true,
+	type envelope struct {
+		Result struct {
+			StatusCode int    `json:"StatusCode"`
+			Body       []byte `json:"Body"`
+		} `json:"result"`
+	}
+	decode := func(raw []byte) envelope {
+		var out envelope
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatalf("decode envelope: %v (%s)", err, raw)
+		}
+		return out
 	}
 
-	var req settingsUpdateRequest
-	typ := reflect.TypeOf(req)
-	for i := 0; i < typ.NumField(); i++ {
-		field := typ.Field(i)
-		jsonTag := strings.Split(field.Tag.Get("json"), ",")[0]
-		if jsonTag == "" || jsonTag == "-" || deprecated[jsonTag] {
-			continue
-		}
-		if !strings.Contains(page, jsonTag) {
-			t.Errorf("POST /settings 的字段 %q（%s）在控制台页面里没有出现，页面改动不会被后端接收",
-				jsonTag, field.Name)
-		}
+	raw, err := service.Handle([]byte(`{"method":"GET","path":"/plugins/freetier/tasks/autoall/status"}`))
+	if err != nil {
+		t.Fatalf("handle autoall status: %v", err)
+	}
+	status := decode(raw)
+	if status.Result.StatusCode != http.StatusOK {
+		t.Fatalf("autoall status = %d, want 200", status.Result.StatusCode)
+	}
+	if !strings.Contains(string(status.Result.Body), `"running"`) {
+		t.Fatalf("status payload must expose running: %s", status.Result.Body)
 	}
 
-	// 反向：页面读取的 /status 键必须在后端载荷里真实存在。
-	for _, key := range []string{"version", "settings", "prompt_mode"} {
-		if !strings.Contains(page, key) {
-			t.Errorf("页面读取的 /status 键 %q 未出现在页面上", key)
-		}
+	// 坏 JSON 走解析失败分支（400），证明 POST 路由已挂上；404 就是没挂。
+	raw, err = service.Handle([]byte(`{"method":"POST","path":"/plugins/freetier/tasks/autoall","body":"ew=="}`))
+	if err != nil {
+		t.Fatalf("handle autoall start: %v", err)
+	}
+	start := decode(raw)
+	if start.Result.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad body should 400 (route must be wired), got %d", start.Result.StatusCode)
 	}
 }

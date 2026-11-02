@@ -29,8 +29,6 @@ type ModelSettings struct {
 	EnabledRealms  []string
 	ExtraModels    []string
 	DisabledModels []string
-	// ModelNameTag 是模型名渠道标识模式（off/prefix/suffix）。
-	ModelNameTag string
 	// ContextWindowFor 返回额外模型的上下文窗口兜底（缺省 0 表示不填）。
 	ContextWindowFor func(modelID string) int64
 }
@@ -352,7 +350,7 @@ func (c *Catalog) CacheProbedModels(vendorID string, models []pluginapi.ModelInf
 // 出现「清单是新的、倍率还是上一批」的错配。
 func (c *Catalog) cacheProbed(vendorID string, models []pluginapi.ModelInfo) bool {
 	if len(models) == 0 {
-		logger.Info("models: %s probe returned 0 model(s); keeping %d cached",
+		logger.Info("模型：%s 探测返回 0 个模型，保留已缓存的 %d 个",
 			vendorID, len(c.Registered(vendorID)))
 		return false
 	}
@@ -528,11 +526,11 @@ func (c *Catalog) probeVendor(vendor core.Vendor, done chan struct{}) {
 
 	wrote := false
 	if errModels != nil {
-		logger.Info("models: %s console probe failed: %v", vendorID, errModels)
+		logger.Info("模型：%s 控制台探测失败：%v", vendorID, errModels)
 	} else {
 		wrote = c.CacheProbedModels(vendorID, models)
 		if wrote {
-			logger.Info("models: %s console probe cached %d model(s)", vendorID, len(models))
+			logger.Info("模型：%s 控制台探测已缓存 %d 个模型", vendorID, len(models))
 		}
 	}
 
@@ -725,7 +723,7 @@ func (c *Catalog) AliasFor(vendorID, modelID string) string {
 func (c *Catalog) ApplyAliases(vendorID string, models []pluginapi.ModelInfo) []pluginapi.ModelInfo {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if len(models) == 0 || (c.settings.ModelNameTag == ModelNameTagOff && len(c.aliases) == 0) {
+	if len(models) == 0 {
 		return models
 	}
 	prefix := strings.ToLower(strings.TrimSpace(vendorID)) + ":"
@@ -758,18 +756,18 @@ func (c *Catalog) ApplyAliases(vendorID string, models []pluginapi.ModelInfo) []
 	return out
 }
 
-// taggedModelID 按当前模式给模型 ID 加渠道标识；off 或结果为空返回空串。
+// taggedModelID 给模型 ID 加固定的渠道前缀。
 //
-// 标识统一按**供应商**生成（不同账号之间不区分）：zcode 的 GLM-5.3 无论几个
-// 账号对外都是 zcode-GLM-5.3。
+// 前缀写死为「供应商-模型」，不可配置：同名模型在不同渠道下必须天然可区分，
+// 否则客户端最终命中哪个渠道取决于清单顺序。标识统一按**供应商**生成
+// （不同账号之间不区分）：zcode 的 GLM-5.3 无论几个账号对外都是 zcode-GLM-5.3。
 func (c *Catalog) taggedModelID(vendorID, modelID string) string {
-	switch c.settings.ModelNameTag {
-	case ModelNameTagPrefix:
-		return vendorID + "-" + modelID
-	case ModelNameTagSuffix:
-		return modelID + "-" + vendorID
+	vendorID = strings.TrimSpace(vendorID)
+	modelID = strings.TrimSpace(modelID)
+	if vendorID == "" || modelID == "" {
+		return ""
 	}
-	return ""
+	return vendorID + "-" + modelID
 }
 
 // ResolveOutboundModel 把客户端请求的模型名还原成上游的官方 ID。
@@ -796,7 +794,7 @@ func (c *Catalog) ResolveOutboundModel(vendorID, model string) string {
 		if c.registeredLocked(vendorID, bare) {
 			return bare
 		}
-		logger.Debug("models: ignoring alias %q -> %q (%s no longer registers it)", alias, bare, vendorID)
+		logger.Debug("模型：忽略别名 %q → %q（%s 已不再注册该模型）", alias, bare, vendorID)
 	}
 	// 自动渠道标识的还原：prefix / suffix **两种形态都试**（不依赖当前模式）。
 	// 模式切换后（如 prefix→off/suffix）宿主注册表仍是旧名字，客户端手里的
@@ -883,22 +881,22 @@ func (c *Catalog) StaticModels(ctx context.Context) ([]pluginapi.ModelInfo, erro
 	active := hostbridge.ActiveVendorSet(ctx, "", c.registry)
 	for _, vendor := range c.registry.Vendors() {
 		if !c.RealmEnabled(vendor.Region()) {
-			logger.Debug("models: skip %s (realm %q not enabled)", vendor.ID(), vendor.Region())
+			logger.Debug("模型：跳过 %s（区域 %q 未启用）", vendor.ID(), vendor.Region())
 			continue
 		}
 		if !active[vendor.ID()] {
-			logger.Debug("models: skip %s (no usable credential)", vendor.ID())
+			logger.Debug("模型：跳过 %s（无可用凭证）", vendor.ID())
 			continue
 		}
 		models, errModels := vendor.StaticModels(ctx)
 		if errModels != nil {
-			logger.Info("models: %s probe failed: %v", vendor.ID(), errModels)
+			logger.Info("模型：%s 探测失败：%v", vendor.ID(), errModels)
 			if firstErr == nil {
 				firstErr = errModels
 			}
 			continue
 		}
-		logger.Info("models: %s registered %d model(s)", vendor.ID(), len(models))
+		logger.Info("模型：%s 已注册 %d 个模型", vendor.ID(), len(models))
 		// 缓存官方 ID 清单供管理页回读（注册路径随后会换成别名）。
 		c.cacheProbed(vendor.ID(), models)
 		all = append(all, c.ApplyAliases(vendor.ID(), c.FilterForVendor(vendor.ID(), models))...)
@@ -921,19 +919,19 @@ func (c *Catalog) RefreshFromUpstream(ctx context.Context) (int, error) {
 	active := hostbridge.ActiveVendorSet(ctx, "", c.registry)
 	for _, vendor := range c.registry.Vendors() {
 		if !c.RealmEnabled(vendor.Region()) || !active[vendor.ID()] {
-			logger.Debug("models: refresh skip %s (realm enabled=%t, credential=%t)",
+			logger.Debug("模型：刷新跳过 %s（区域启用=%t，有凭证=%t）",
 				vendor.ID(), c.RealmEnabled(vendor.Region()), active[vendor.ID()])
 			continue
 		}
 		models, errModels := vendor.StaticModels(ctx)
 		if errModels != nil {
-			logger.Info("models: refresh %s failed: %v", vendor.ID(), errModels)
+			logger.Info("模型：刷新 %s 失败：%v", vendor.ID(), errModels)
 			if firstErr == nil {
 				firstErr = errModels
 			}
 			continue
 		}
-		logger.Info("models: refresh %s got %d model(s)", vendor.ID(), len(models))
+		logger.Info("模型：刷新 %s 得到 %d 个模型", vendor.ID(), len(models))
 		c.cacheProbed(vendor.ID(), models)
 		total += len(models)
 	}

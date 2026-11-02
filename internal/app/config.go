@@ -54,7 +54,7 @@ func (a *App) ApplyConfig(cfg pluginConfig) error {
 	}
 	logger.SetLevel(cfg.LogLevel)
 	if errLog := logger.InitFile(cfg.LogToFile, filepath.Join(cfg.StateDir, "logs")); errLog != nil {
-		logger.Error("init log file sink failed: %v", errLog)
+		logger.Error("初始化日志文件输出失败：%v", errLog)
 	}
 	a.store.Configure(cfg.StateDir)
 	salt, errSalt := a.ensureMachineSalt(cfg)
@@ -68,7 +68,6 @@ func (a *App) ApplyConfig(cfg pluginConfig) error {
 		ExtraModels:      cfg.ExtraModels,
 		DisabledModels:   cfg.DisabledModels,
 		ContextWindowFor: core.DefaultContextWindow,
-		ModelNameTag:     admin.EffectiveModelNameTag(cfg, a.SnapshotState().ModelNameTag),
 	})
 	a.models.RefreshFromState()
 	a.configureVendors(cfg)
@@ -124,7 +123,7 @@ func (a *App) ensureMachineSalt(cfg pluginConfig) (string, error) {
 	if errWrite := os.WriteFile(path, []byte(salt+"\n"), 0o600); errWrite != nil {
 		return "", fmt.Errorf("write machine salt: %w", errWrite)
 	}
-	logger.Info("machine salt generated at %s (do not change: it defines this deployment's device fingerprints)", path)
+	logger.Info("已在 %s 生成机器盐（请勿更改：它决定本部署的设备指纹）", path)
 	return salt, nil
 }
 

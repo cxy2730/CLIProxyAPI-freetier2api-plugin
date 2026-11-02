@@ -229,7 +229,7 @@ func fetchTicketCredentials(ctx context.Context, ticketURL, ticketID, secret str
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
 		note := describeUpstream(resp.StatusCode, body)
-		logger.Debug("codearts: 票据未就绪 %s", note)
+		logger.Debug("codearts：票据未就绪 %s", note)
 		return ticketPollResult{Note: note}, nil
 	}
 

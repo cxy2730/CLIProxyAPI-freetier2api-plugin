@@ -92,7 +92,7 @@ func (v *adapter) StaticModels(ctx context.Context) ([]pluginapi.ModelInfo, erro
 	v.modelsDev.enrich(ctx, models)
 	catalog, errCatalog := v.modelsDev.fetch(ctx)
 	if errCatalog != nil {
-		logger.Info("opencodezen: models.dev catalog unavailable, keep all models: %v", errCatalog)
+		logger.Info("opencodezen：models.dev 目录不可用，保留全部模型：%v", errCatalog)
 	}
 	return v.modelsToPluginAPI(freeOnly(models, catalog)), nil
 }
@@ -118,13 +118,13 @@ func (v *adapter) ModelsForAuth(ctx context.Context, cred *core.Credential) ([]p
 		//
 		// 但**必须用 Info 而不是 Debug**：宿主日志默认 info 级别，Debug 会被
 		// 完全吞掉，用户只会看到「模型列表里没有 opencodezen」而无从查起。
-		logger.Info("opencodezen: model probe failed: %v", errModels)
+		logger.Info("opencodezen：模型探测失败：%v", errModels)
 		return nil, nil
 	}
 	v.modelsDev.enrich(ctx, models)
 	catalog, errCatalog := v.modelsDev.fetch(ctx)
 	if errCatalog != nil {
-		logger.Info("opencodezen: models.dev catalog unavailable, keep all models: %v", errCatalog)
+		logger.Info("opencodezen：models.dev 目录不可用，保留全部模型：%v", errCatalog)
 	}
 	return v.modelsToPluginAPI(freeOnly(models, catalog)), nil
 }
@@ -243,7 +243,7 @@ func (v *adapter) ExecuteStream(ctx context.Context, cred *core.Credential, req 
 func (v *adapter) catalog(ctx context.Context) modelsDevCatalog {
 	catalog, errCatalog := v.modelsDev.fetch(ctx)
 	if errCatalog != nil {
-		logger.Info("opencodezen: models.dev catalog unavailable, fall back to name-based free detection: %v", errCatalog)
+		logger.Info("opencodezen：models.dev 目录不可用，改用按名称判定免费模型：%v", errCatalog)
 		return nil
 	}
 	return catalog

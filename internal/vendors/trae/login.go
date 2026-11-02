@@ -276,7 +276,7 @@ func (s *SessionStore) EnsureCallbackServer() error {
 
 	listener, errListen := net.Listen("tcp", "127.0.0.1:18080")
 	if errListen != nil {
-		logger.Debug("trae: 18080 已被占用，改用随机端口: %v", errListen)
+		logger.Debug("trae：18080 已被占用，改用随机端口：%v", errListen)
 		listener, errListen = net.Listen("tcp", "127.0.0.1:0")
 		if errListen != nil {
 			return fmt.Errorf("listen callback: %w", errListen)
@@ -290,9 +290,9 @@ func (s *SessionStore) EnsureCallbackServer() error {
 	s.serverAddr = "http://" + listener.Addr().String()
 	s.listening = true
 	go func() {
-		logger.Info("trae: 本地授权回调监听已启动: %s/authorize", s.serverAddr)
+		logger.Info("trae：本地授权回调监听已启动：%s/authorize", s.serverAddr)
 		if errServe := srv.Serve(listener); errServe != nil && errServe != http.ErrServerClosed {
-			logger.Error("trae: 回调服务退出: %v", errServe)
+			logger.Error("trae：回调服务退出：%v", errServe)
 		}
 	}()
 	return nil
@@ -473,7 +473,7 @@ func (s *SessionStore) completeLogin(ctx context.Context, matched *PendingSessio
 	if refreshToken != "" {
 		newAccess, newRefresh, exp, errEx := exchangeTraeToken(ctx, authHost, clientID, uid, refreshToken)
 		if errEx != nil {
-			logger.Error("trae: callback exchange token warning: %v, falling back to original", errEx)
+			logger.Error("trae：回调换令牌告警：%v，回退使用原凭证", errEx)
 		} else {
 			accessToken = newAccess
 			if newRefresh != "" {
@@ -526,7 +526,7 @@ func (s *SessionStore) completeLogin(ctx context.Context, matched *PendingSessio
 	matched.AuthData = authData
 	matched.State = "success"
 
-	logger.Info("trae: 授权成功，账号=%s (%s), vendor=%s", uid, nickname, matched.VendorID)
+	logger.Info("trae：授权成功，账号=%s（%s）供应商=%s", uid, nickname, matched.VendorID)
 	return authData, nil
 }
 

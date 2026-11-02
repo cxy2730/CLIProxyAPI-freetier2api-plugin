@@ -61,10 +61,12 @@ func TestCodeArtsStaticAndAuthModelsStayInSync(t *testing.T) {
 			t.Fatalf("model.static 缺少 %q（控制台会少模型）: static=%v", id, staticIDs)
 		}
 	}
-	if !authIDs["glm-5.3"] {
+	if !authIDs["codearts-glm-5.3"] {
 		t.Fatalf("福利模型必须进 /v1/models: %v", authIDs)
 	}
-	if authIDs["kimi-k2.6-vl"] {
+	// 内置目录写的是 kimi-k2.6-VL，福利清单给的是小写 vl；
+	// 合并后只保留内置写法，小写形态不得单独出现。
+	if !authIDs["codearts-kimi-k2.6-VL"] || authIDs["codearts-kimi-k2.6-vl"] {
 		t.Fatalf("大小写重复必须合并成内置目录的写法: %v", authIDs)
 	}
 }
