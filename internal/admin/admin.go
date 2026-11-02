@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -243,17 +242,6 @@ func matchesResourcePath(path, pluginID, suffix string) bool {
 	return normalized == "/v0/resource/plugins/"+pluginID+suffix
 }
 
-// managementSuffix 返回去掉前缀后的子路径。
-func managementSuffix(path, pluginID string) (string, bool) {
-	normalized := normalizeRequestPath(path)
-	for _, prefix := range []string{"/plugins/" + pluginID, "/v0/management/plugins/" + pluginID} {
-		if strings.HasPrefix(normalized, prefix) {
-			return strings.TrimPrefix(normalized, prefix), true
-		}
-	}
-	return "", false
-}
-
 func normalizeRequestPath(path string) string {
 	trimmed := strings.TrimRight(strings.TrimSpace(path), "/")
 	if index := strings.IndexByte(trimmed, '?'); index >= 0 {
@@ -347,21 +335,6 @@ func queryString(query map[string][]string, key string) string {
 		}
 	}
 	return ""
-}
-
-func queryInt64(query map[string][]string, key string, fallback int64) int64 {
-	if query == nil {
-		return fallback
-	}
-	values, okValues := query[key]
-	if !okValues || len(values) == 0 {
-		return fallback
-	}
-	parsed, errParse := strconv.ParseInt(strings.TrimSpace(values[0]), 10, 64)
-	if errParse != nil {
-		return fallback
-	}
-	return parsed
 }
 
 // 供子文件使用的共享助手。

@@ -148,7 +148,6 @@ func (s *Service) recordCheckinResult(vendor core.Vendor, credential *core.Crede
 	provisional := s.checkinProvisional(result)
 	entry := s.checkinEntry(trigger, checkinResultStatus(result), checkinResultMessage(result, provisional), result.Credit)
 	today := s.todayString()
-	limit := s.checkinHistoryLimit()
 	// 活跃信标按天幂等：本地记一笔「今天报过了」，供后续排程点去重。
 	beacon := dailyBeacon(vendor)
 	s.deps.MutateState(func(current *state.State) {
@@ -188,7 +187,7 @@ func (s *Service) recordCheckinResult(vendor core.Vendor, credential *core.Crede
 			}
 			current.Checkin[uid] = record
 		}
-		pushCheckinHistory(current, key, entry, limit)
+		pushCheckinHistory(current, key, entry, today)
 	})
 }
 
@@ -228,9 +227,9 @@ func (s *Service) recordCheckinFailure(vendor core.Vendor, credential *core.Cred
 		return
 	}
 	entry := s.checkinEntry(trigger, checkinStatusError, message, 0)
-	limit := s.checkinHistoryLimit()
+	today := s.todayString()
 	s.deps.MutateState(func(current *state.State) {
-		pushCheckinHistory(current, key, entry, limit)
+		pushCheckinHistory(current, key, entry, today)
 	})
 }
 
@@ -245,15 +244,65 @@ func (s *Service) checkinEntry(trigger CheckinTrigger, status, message string, c
 	}
 }
 
-// pushCheckinHistory 把记录插到最前（新→旧）并按上限截断；调用方持有 Mutate 锁。
-func pushCheckinHistory(current *state.State, key string, entry state.CheckinHistoryEntry, limit int) {
+// pushCheckinHistory 把记录插到最前（新→旧），并只保留 today（签到时区当天）的记录；
+// 调用方持有 Mutate 锁。
+//
+// 保留策略：跨天即丢。历史只用于「今天这个账号试过几次、结果如何」，
+// 长期趋势在 state.json 里只增不减地堆积没有意义，反而拖慢每次落盘。
+func pushCheckinHistory(current *state.State, key string, entry state.CheckinHistoryEntry, today string) {
 	history := make([]state.CheckinHistoryEntry, 0, len(current.CheckinHistory[key])+1)
 	history = append(history, entry)
-	history = append(history, current.CheckinHistory[key]...)
-	if len(history) > limit {
-		history = history[:limit]
+	for _, old := range current.CheckinHistory[key] {
+		if checkinEntryDay(old.RunAt) != today {
+			continue
+		}
+		history = append(history, old)
 	}
 	current.CheckinHistory[key] = history
+}
+
+// checkinEntryDay 把历史记录的 RunAt 归一到签到时区的日期（YYYY-MM-DD）。
+// 解析失败返回空串——空串不等于任何 today，因此该记录会被丢弃。
+func checkinEntryDay(runAt string) string {
+	parsed, err := time.Parse(time.RFC3339, runAt)
+	if err != nil {
+		return ""
+	}
+	return parsed.In(checkinZone).Format("2006-01-02")
+}
+
+// pruneCheckinHistory 启动时把历史清到只剩当天，返回被丢弃的条数。
+//
+// 只在真有跨天残留时才写盘，避免每次启动都多一次 state.json 落盘。
+func (s *Service) pruneCheckinHistory() int {
+	today := s.todayString()
+	stale := 0
+	for _, history := range s.deps.State().CheckinHistory {
+		for _, entry := range history {
+			if checkinEntryDay(entry.RunAt) != today {
+				stale++
+			}
+		}
+	}
+	if stale == 0 {
+		return 0
+	}
+	s.deps.MutateState(func(current *state.State) {
+		for key, history := range current.CheckinHistory {
+			kept := history[:0]
+			for _, entry := range history {
+				if checkinEntryDay(entry.RunAt) == today {
+					kept = append(kept, entry)
+				}
+			}
+			if len(kept) == 0 {
+				delete(current.CheckinHistory, key)
+				continue
+			}
+			current.CheckinHistory[key] = kept
+		}
+	})
+	return stale
 }
 
 // checkinHistoryKey 返回该账号的历史键；身份不完整时为空串（不落库）。
@@ -262,14 +311,6 @@ func checkinHistoryKey(vendor core.Vendor, credential *core.Credential) string {
 		return ""
 	}
 	return state.CheckinHistoryKey(vendor.ID(), credential.FileIDValue())
-}
-
-// checkinHistoryLimit 返回生效的历史条数上限（未配置时用默认值）。
-func (s *Service) checkinHistoryLimit() int {
-	if limit := s.deps.Config().CheckinHistoryLimit; limit > 0 {
-		return limit
-	}
-	return state.DefaultCheckinHistoryLimit
 }
 
 // checkinZone 是上游每日签到重置使用的时区（固定 UTC+8）。

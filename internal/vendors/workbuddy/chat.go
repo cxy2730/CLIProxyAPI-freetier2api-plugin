@@ -205,7 +205,7 @@ func unwrapEnvelope(status int, body string, header http.Header) (json.RawMessag
 // 两者都解析出来交给调用方，由它决定冷却到哪个时刻。
 func enrichClassifyError(status int, body string, header http.Header) *core.Failure {
 	classified := Classify(status, body)
-	classified.RetryAfter = ParseRetryAfter(header, time.Now())
+	classified.RetryWait = ParseRetryAfter(header, time.Now())
 	classified.ResetAt = ParseRateReset(body)
 	if classified.Kind == core.FailureKindChannelRejected {
 		// 渠道校验是上游新增的策略拦截，插件侧没有（也不该有）伪造官方客户端证明的手段。

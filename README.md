@@ -19,7 +19,8 @@
 - 模型清单动态探测、自定义模型别名与跨供应商同名模型自动负载均衡/故障转移
 - 内嵌单页 Web 控制台：OAuth 设备授权 / 本地回调粘贴 / API Key 添加账号、账号别名、批量启停删除、额度可视化、签到、模型启停与设置（任务中心与运行日志页已移除，日志统一走宿主官方页）
 - 请求体原样透传：不注入、不替换、不追加任何提示词，也不改写 `system` / `tools` / 采样参数
-- 支持每日自动签到、每日自动任务与 Token 自动续期保活
+- 支持每日自动签到、每日自动任务与 Token 自动续期保活（签到记录只保留当天，跨天自动清空）
+- 不在宿主面板注册 OAuth 登录项：插件不出现在 CLIProxyAPI「OAuth 登录」列表里，加账号与登录一律走插件控制台
 - 纯 Go 标准库实现，零第三方运行时依赖
 
 ## 支持的供应商
@@ -131,7 +132,6 @@ curl http://localhost:8317/v1/messages \
 | `auto_checkin_at` | string | `10:00` | 每日自动签到时间（`HH:MM`，本地时区）。排程粒度为整点，分钟不为 0 时顺延到下一整点，保证不会早于设定时刻执行 |
 | `auto_tasks` | bool | `true` | 每日自动任务开关 |
 | `codearts_credit_enabled` | bool | `false` | 明确开启 CodeArts 积分推理（消耗账号积分）；默认福利通道，失败不自动切换。修改后刷新模型目录 |
-| `checkin_history_limit` | int | `30` | 每个账号保留的签到历史条数（`<=0` 用默认值 30；控制台签到列可展开查看） |
 | `disabled_models` | string / list | 空 | 禁用模型列表（支持 `vendor:model` 或裸名，与控制台勾选合并） |
 | `extra_models` | string | 空 | 额外补充注册的模型名（逗号分隔） |
 | `state_dir` | string | `~/.freetier-plugin` | 状态与缓存目录（若存在 `~/.cli-proxy-api` 则默认使用其下 `freetier` 子目录） |

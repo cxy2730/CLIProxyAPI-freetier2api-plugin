@@ -49,9 +49,6 @@ type CheckinRecord struct {
 	ProvisionalDate string `json:"provisional_date,omitempty"`
 }
 
-// DefaultCheckinHistoryLimit 是每个账号默认保留的签到历史条数。
-const DefaultCheckinHistoryLimit = 30
-
 // CheckinHistoryEntry 是一次签到执行的记录（滚动历史，每个账号只留最近若干条）。
 //
 // 不含 account / vendor 字段：身份由 map 键承载（见 CheckinHistoryKey）。

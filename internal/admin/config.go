@@ -8,11 +8,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"freetier2api-plugin/internal/core"
-	"freetier2api-plugin/internal/state"
 )
 
 // PluginConfig 是 plugins.configs.freetier 解析出的有效全局配置。
@@ -36,8 +34,6 @@ type PluginConfig struct {
 	AutoCheckinAt string
 	// AutoTasks 开启成长任务的每日自动闭环。
 	AutoTasks bool
-	// CheckinHistoryLimit 是每个账号保留的签到历史条数（<1 时用默认值）。
-	CheckinHistoryLimit int
 
 	// Raw 是配置的原始键值表（key → 原文），供供应商解析专属键。
 	Raw map[string]string
@@ -48,8 +44,6 @@ const (
 	DefaultLogLevel = "info"
 	// DefaultCheckinAt 是默认签到时间。
 	DefaultCheckinAt = "10:00"
-	// CheckinHistoryLimitKey 是签到历史条数的配置键。
-	CheckinHistoryLimitKey = "checkin_history_limit"
 	// DefaultStateDirName 是默认状态目录名。
 	DefaultStateDirName = ".freetier-plugin"
 	// StateDirEnvOverride 是状态目录的环境变量覆盖项。
@@ -82,8 +76,6 @@ func DefaultPluginConfig() PluginConfig {
 		AutoCheckin:   true,
 		AutoCheckinAt: DefaultCheckinAt,
 		AutoTasks:     true,
-		// 签到历史条数属于任务设置，默认 30 条/账号。
-		CheckinHistoryLimit: state.DefaultCheckinHistoryLimit,
 	}
 }
 
@@ -165,14 +157,6 @@ func applyConfigLine(cfg *PluginConfig, key, value string) error {
 		}
 	case "auto_tasks":
 		cfg.AutoTasks = ParseBool(value, cfg.AutoTasks)
-	case CheckinHistoryLimitKey:
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			limit, errLimit := strconv.Atoi(trimmed)
-			if errLimit != nil {
-				return fmt.Errorf("%s: %w", CheckinHistoryLimitKey, errLimit)
-			}
-			cfg.CheckinHistoryLimit = limit
-		}
 	}
 	return nil
 }

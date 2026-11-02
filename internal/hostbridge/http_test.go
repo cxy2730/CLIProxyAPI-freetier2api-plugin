@@ -1,5 +1,7 @@
 package hostbridge
 
+//lint:file-ignore SA1012 测试刻意验证 nil context 边界（CallbackID/WithCallbackID 对 nil 的安全行为）。
+
 // 本文件测试宿主 HTTP 桥的契约兼容性。
 //
 // 重点是 host.http.do 的响应键名：宿主把无 json tag 的 pluginapi.HTTPResponse

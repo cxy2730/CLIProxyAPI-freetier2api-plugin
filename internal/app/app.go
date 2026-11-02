@@ -19,7 +19,7 @@ import (
 )
 
 // DefaultVersion 是未注入发行版号时的版本。
-const DefaultVersion = "0.1.33"
+const DefaultVersion = "0.1.34"
 
 // Options 是 App 的构造参数。
 type Options struct {
@@ -56,11 +56,10 @@ type App struct {
 	backgroundCancel context.CancelFunc
 	backgroundWG     sync.WaitGroup
 
-	streamMu       sync.Mutex
-	streamCancels  map[uint64]context.CancelFunc
-	streamWG       sync.WaitGroup
-	nextStreamKey  uint64
-	pluginStreamID uint64
+	streamMu      sync.Mutex
+	streamCancels map[uint64]context.CancelFunc
+	streamWG      sync.WaitGroup
+	nextStreamKey uint64
 
 	pool  *auth.Pool
 	tasks *tasks.Service

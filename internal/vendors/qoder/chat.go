@@ -788,11 +788,7 @@ func PathSigFrom(rawURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	p := u.Path
-	if strings.HasPrefix(p, "/algo") {
-		p = p[len("/algo"):]
-	}
-	return p, nil
+	return strings.TrimPrefix(u.Path, "/algo"), nil
 }
 
 // shortResponseMaxBytes 是 Qoder 短响应（模型目录、额度、签到、换取 jobToken、
@@ -1903,42 +1899,6 @@ func isRetryableStreamError(err error) bool {
 		return IsTransientUpstream(ue.Status, ue.Detail)
 	}
 	return IsTransientTransport(err)
-}
-
-// sensitiveFieldNames 命中后其字符串子值会被脱敏（递归进数组/对象继续处理）
-var sensitiveFieldNames = map[string]bool{
-	"content":      true,
-	"text":         true,
-	"system":       true,
-	"input":        true,
-	"instructions": true,
-	"prompt":       true,
-	"description":  true,
-}
-
-func redactValue(v interface{}, parentField string) {
-	switch x := v.(type) {
-	case map[string]interface{}:
-		for k, child := range x {
-			if s, ok := child.(string); ok {
-				if (sensitiveFieldNames[k] || sensitiveFieldNames[parentField]) && len(s) > 32 {
-					x[k] = fmt.Sprintf("<redacted len=%d>", len(s))
-				}
-				continue
-			}
-			redactValue(child, k)
-		}
-	case []interface{}:
-		for i, item := range x {
-			if s, ok := item.(string); ok {
-				if sensitiveFieldNames[parentField] && len(s) > 32 {
-					x[i] = fmt.Sprintf("<redacted len=%d>", len(s))
-				}
-				continue
-			}
-			redactValue(item, parentField)
-		}
-	}
 }
 
 func StrVal(m map[string]interface{}, key string) string {

@@ -1,5 +1,7 @@
 package hostbridge
 
+//lint:file-ignore SA1012 测试刻意验证 nil context 边界（CallbackID/WithCallbackID 对 nil 的安全行为）。
+
 // 本文件覆盖宿主 RPC 通道的契约：回调 ID 绑定、未注入时的显式报错、
 // 注入后的调用转发与并发计数。
 

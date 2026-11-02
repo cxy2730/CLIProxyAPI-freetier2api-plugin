@@ -19,7 +19,8 @@ If this project helps you, a Star would mean a lot.
 - Dynamic model catalog discovery, custom model aliases, and cross-provider load balancing / failover
 - Built-in single-page Web console for OAuth device login, localhost callback paste, API Key import, account aliases, batch enable/disable/delete, quota tracking, check-in, model toggling, and settings (the task center and log page were removed; logs live in the host UI)
 - Request bodies pass through untouched: no prompt injection, replacement, or appending, and no rewriting of `system` / `tools` / sampling parameters
-- Automated daily check-in, automated daily tasks, and token keepalive refresh
+- Automated daily check-in, automated daily tasks, and token keepalive refresh (check-in history keeps today only and is cleared on day change)
+- No OAuth login entry in the host panel: the plugin is intentionally absent from CLIProxyAPI’s "OAuth login" list, so accounts are added from the plugin console only
 - Pure Go standard library implementation with zero third-party runtime dependencies
 
 ## Supported Providers
@@ -131,7 +132,6 @@ Configure under `plugins.configs.freetier` in `config.yaml` (runtime settings ca
 | `auto_checkin_at` | string | `10:00` | Daily check-in time (`HH:MM`, local time). Scheduling is hourly, so any minute above 0 rounds up to the next hour and the run never fires before the configured time |
 | `auto_tasks` | bool | `true` | Enable automated daily tasks |
 | `codearts_credit_enabled` | bool | `false` | Explicitly enable credit-billed CodeArts inference; no automatic channel fallback. Refresh models after changing |
-| `checkin_history_limit` | int | `30` | Check-in records kept per account (`<=0` falls back to 30; expandable in the console) |
 | `disabled_models` | string / list | empty | Disabled models (`vendor:model` or bare name) |
 | `extra_models` | string | empty | Additional model IDs to register (comma-separated) |
 | `state_dir` | string | `~/.freetier-plugin` | State and cache directory |

@@ -30,6 +30,14 @@ type UpstreamError interface {
 	UpstreamKind() string
 }
 
+// RetryHinter 由能给出上游明示等待时间的错误实现。
+//
+// 宿主把 retry_after_seconds 翻成 Retry-After 响应头，客户端据此退避；
+// 没实现或返回 0 时保持原样（不额外发头）。
+type RetryHinter interface {
+	RetryAfter() time.Duration
+}
+
 // UpstreamDetail 由能提供上游原始响应正文的错误实现。
 //
 // 用途：流式错误帧与日志里优先给用户看上游原文（诊断价值更高），
@@ -54,12 +62,33 @@ func ToPluginError(err error) error {
 			status = http.StatusBadGateway
 		}
 		code := upstreamCode(upstreamErr.UpstreamKind())
+		var pluginErr *PluginError
 		if upstreamErr.Retryable() {
-			return RetryablePluginError(code, err.Error(), status)
+			pluginErr = RetryablePluginError(code, err.Error(), status)
+		} else {
+			pluginErr = NewPluginError(code, err.Error(), status)
 		}
-		return NewPluginError(code, err.Error(), status)
+		pluginErr.RetryAfterSeconds = retryAfterSeconds(err)
+		return pluginErr
 	}
 	return RetryablePluginError("upstream_request_failed", err.Error(), http.StatusBadGateway)
+}
+
+// retryAfterSeconds 取出上游明示的等待秒数（向上取整）。
+func retryAfterSeconds(err error) int {
+	var hinter RetryHinter
+	if !errors.As(err, &hinter) {
+		return 0
+	}
+	wait := hinter.RetryAfter()
+	if wait <= 0 {
+		return 0
+	}
+	seconds := int((wait + time.Second - 1) / time.Second)
+	if seconds < 1 {
+		seconds = 1
+	}
+	return seconds
 }
 
 // upstreamCode 生成错误码：upstream_<kind>。
@@ -84,6 +113,9 @@ type envelopeError struct {
 	Message    string `json:"message"`
 	Retryable  bool   `json:"retryable,omitempty"`
 	HTTPStatus int    `json:"http_status,omitempty"`
+	// RetryAfterSeconds 是上游明示的等待秒数。宿主（CPA 8.0.5x）会把它翻成
+	// 响应头 Retry-After 交给客户端；旧宿主忽略该字段，不影响兼容。
+	RetryAfterSeconds int `json:"retry_after_seconds,omitempty"`
 }
 
 // PluginError 是插件内部的结构化错误：可携带 HTTP 状态码与可重试标记。
@@ -95,6 +127,8 @@ type PluginError struct {
 	Message    string
 	Retryable  bool
 	HTTPStatus int
+	// RetryAfterSeconds 来自上游明示的等待信息（0 表示未给出）。
+	RetryAfterSeconds int
 }
 
 // Error 实现 error 接口。
@@ -140,10 +174,11 @@ func ErrorEnvelopeFromError(err error) []byte {
 	}
 	if pluginErr, ok := err.(*PluginError); ok {
 		raw, _ := json.Marshal(envelope{OK: false, Error: &envelopeError{
-			Code:       pluginErr.Code,
-			Message:    pluginErr.Message,
-			Retryable:  pluginErr.Retryable,
-			HTTPStatus: pluginErr.HTTPStatus,
+			Code:              pluginErr.Code,
+			Message:           pluginErr.Message,
+			Retryable:         pluginErr.Retryable,
+			HTTPStatus:        pluginErr.HTTPStatus,
+			RetryAfterSeconds: pluginErr.RetryAfterSeconds,
 		}})
 		return raw
 	}
@@ -195,18 +230,26 @@ func (k FailureKind) String() string {
 
 // Failure 是带分类的上游错误。
 //
-// Msg 保持上游原文；Code 是上游业务码的可读形式（可为空）。RetryAfter /
+// Msg 保持上游原文；Code 是上游业务码的可读形式（可为空）。RetryWait /
 // ResetAt 是上游明示的等待信息，零值表示未给出。
 type Failure struct {
-	Kind       FailureKind
-	Status     int
-	Code       string
-	Msg        string
-	RetryAfter time.Duration
-	ResetAt    time.Time
+	Kind      FailureKind
+	Status    int
+	Code      string
+	Msg       string
+	RetryWait time.Duration
+	ResetAt   time.Time
 
 	// RetryableOverride 允许供应商覆盖通用的可重试判定（nil 表示按 FailureKind 推导）。
 	RetryableOverride *bool
+}
+
+// RetryAfter 实现 RetryHinter：把上游明示的等待时长交给宿主。
+func (e *Failure) RetryAfter() time.Duration {
+	if e == nil {
+		return 0
+	}
+	return e.RetryWait
 }
 
 // Failure 实现 error 接口。

@@ -87,6 +87,8 @@ func (s *Service) Start(ctx context.Context) {
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	s.schedulerCancel = cancel
+	// 签到历史只留当天：升级后第一次启动就把跨天残留清掉，不用等下一次签到。
+	s.pruneCheckinHistory()
 	s.jobMu.Lock()
 	jobCtx, jobCancel := context.WithCancel(context.Background())
 	s.jobCtx, s.jobCancel = jobCtx, jobCancel

@@ -231,12 +231,12 @@ func TestCheckinRecordsHistoryForEveryPath(t *testing.T) {
 	})
 }
 
-// TestCheckinHistoryTrimsOldest 验证超出上限时淘汰最旧，且始终新→旧。
-func TestCheckinHistoryTrimsOldest(t *testing.T) {
+// TestCheckinHistoryKeepsOnlyToday 验证历史只保留当天：同日不限条数，
+// 跨天（按签到时区判断）一律丢弃旧记录。
+func TestCheckinHistoryKeepsOnlyToday(t *testing.T) {
 	credential := &core.Credential{FileID: "qodercn-user"}
 	key := state.CheckinHistoryKey("qodercn", "qodercn-user")
 	deps := newFakeDeps(time.Date(2026, 10, 25, 10, 0, 0, 0, time.UTC))
-	deps.cfg.CheckinHistoryLimit = 2
 	service := &Service{deps: deps}
 
 	for index := 1; index <= 3; index++ {
@@ -248,11 +248,59 @@ func TestCheckinHistoryTrimsOldest(t *testing.T) {
 	}
 
 	history := deps.state.CheckinHistory[key]
-	if len(history) != 2 {
-		t.Fatalf("历史条数 = %d, 期望按上限截断到 2", len(history))
+	if len(history) != 3 {
+		t.Fatalf("同一天的历史条数 = %d, 期望 3（不再按条数截断）", len(history))
 	}
-	if history[0].Message != "第 3 次" || history[1].Message != "第 2 次" {
-		t.Fatalf("历史顺序 = %+v, 期望新→旧且淘汰最旧", history)
+	if history[0].Message != "第 3 次" || history[2].Message != "第 1 次" {
+		t.Fatalf("历史顺序 = %+v, 期望新→旧", history)
+	}
+
+	// 跨天：新一天的第一条写下时，前一天的三条全部淘汰。
+	deps.now = time.Date(2026, 10, 26, 9, 30, 0, 0, time.UTC)
+	vendor := &fakeCheckinVendor{id: "qodercn", result: &core.CheckinResult{Message: "次日"}}
+	if _, errRun := service.Checkin(context.Background(), vendor, credential, CheckinTriggerManual); errRun != nil {
+		t.Fatalf("Checkin: %v", errRun)
+	}
+	history = deps.state.CheckinHistory[key]
+	if len(history) != 1 || history[0].Message != "次日" {
+		t.Fatalf("跨天后历史 = %+v, 期望只剩当天一条", history)
+	}
+}
+
+// TestPruneCheckinHistoryOnStart 验证启动清理：跨天残留被删、当天记录保留、
+// 全是旧记录时整个键被移除。
+func TestPruneCheckinHistoryOnStart(t *testing.T) {
+	deps := newFakeDeps(time.Date(2026, 10, 25, 8, 0, 0, 0, time.UTC))
+	old := state.CheckinHistoryKey("qodercn", "old-user")
+	sameDay := state.CheckinHistoryKey("qodercn", "same-day")
+	stale := state.CheckinHistoryKey("qodercn", "stale-user")
+	deps.state.CheckinHistory[old] = []state.CheckinHistoryEntry{
+		{RunAt: "2026-10-24T09:00:00+08:00", Status: "ok", Message: "昨天"},
+	}
+	deps.state.CheckinHistory[sameDay] = []state.CheckinHistoryEntry{
+		{RunAt: "2026-10-25T09:00:00+08:00", Status: "ok", Message: "今天"},
+		{RunAt: "2026-10-24T09:00:00+08:00", Status: "ok", Message: "昨天"},
+	}
+	deps.state.CheckinHistory[stale] = []state.CheckinHistoryEntry{
+		{RunAt: "not-a-time", Status: "ok", Message: "解析不了"},
+	}
+	service := &Service{deps: deps}
+
+	if dropped := service.pruneCheckinHistory(); dropped != 3 {
+		t.Fatalf("丢弃条数 = %d, 期望 3", dropped)
+	}
+	if _, ok := deps.state.CheckinHistory[old]; ok {
+		t.Error("全是旧记录的键必须整条移除")
+	}
+	if _, ok := deps.state.CheckinHistory[stale]; ok {
+		t.Error("时间解析失败的记录无法证明属于当天，必须丢弃")
+	}
+	kept := deps.state.CheckinHistory[sameDay]
+	if len(kept) != 1 || kept[0].Message != "今天" {
+		t.Fatalf("当天记录 = %+v, 期望只留「今天」", kept)
+	}
+	if dropped := service.pruneCheckinHistory(); dropped != 0 {
+		t.Fatalf("第二次清理丢弃 %d 条, 期望 0（幂等）", dropped)
 	}
 }
 

@@ -32,9 +32,6 @@ import (
 	"freetier2api-plugin/internal/hostbridge"
 )
 
-// loginAuthorizePath 是官方授权页路径。
-const loginAuthorizePath = "/code/authorize"
-
 // loginAppName 是授权页上报的客户端名（与官方桌面客户端一致）。
 const loginAppName = "办公小浣熊客户端"
 

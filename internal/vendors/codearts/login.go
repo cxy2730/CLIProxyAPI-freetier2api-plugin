@@ -2,6 +2,7 @@ package codearts
 
 import (
 	"context"
+	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -594,7 +595,24 @@ func buildDPoPProof(jwk map[string]string, htu string) (string, error) {
 	xStr := jwk["x"]
 	yStr := jwk["y"]
 	if xStr == "" || yStr == "" {
-		x, y := curve.ScalarBaseMult(dRaw)
+		// 用推荐的 crypto/ecdh 从私钥标量推导公钥点（替代已弃用的
+		// elliptic.ScalarBaseMult）。P-256 私钥标量标准为 32 字节；
+		// 非标长度按高位补零/取尾 32 字节归一，与标量取模语义兼容。
+		scalar := dRaw
+		if len(scalar) > 32 {
+			scalar = scalar[len(scalar)-32:]
+		} else if len(scalar) < 32 {
+			padded := make([]byte, 32)
+			copy(padded[32-len(scalar):], scalar)
+			scalar = padded
+		}
+		ecdhPriv, errEcdh := ecdh.P256().NewPrivateKey(scalar)
+		if errEcdh != nil {
+			return "", fmt.Errorf("derive dpop public key failed")
+		}
+		pub := ecdhPriv.PublicKey().Bytes() // 65 字节：0x04 || X || Y
+		x := new(big.Int).SetBytes(pub[1:33])
+		y := new(big.Int).SetBytes(pub[33:65])
 		xStr = base64.RawURLEncoding.EncodeToString(pad(x, 32))
 		yStr = base64.RawURLEncoding.EncodeToString(pad(y, 32))
 		jwk["x"] = xStr

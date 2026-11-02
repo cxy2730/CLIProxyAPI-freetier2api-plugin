@@ -109,7 +109,7 @@ type accountSummary struct {
 	// Claim 是该账号的套餐领取状态；SupportsClaim 为 false 时前端不渲染入口。
 	Claim         *state.ClaimRecord `json:"claim,omitempty"`
 	SupportsClaim bool               `json:"supports_claim"`
-	// CheckinHistory 是该账号最近的签到执行记录（新→旧，最多 checkin_history_limit 条）。
+	// CheckinHistory 是该账号当天的签到执行记录（新→旧；跨天即清空）。
 	CheckinHistory []state.CheckinHistoryEntry `json:"checkin_history,omitempty"`
 }
 

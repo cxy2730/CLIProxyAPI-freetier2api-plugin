@@ -92,12 +92,3 @@ func (s *Service) handleSettingsRequest(req pluginapi.ManagementRequest) plugina
 func (s *Service) settingsView() map[string]any {
 	return s.tasks.EffectiveSettings()
 }
-
-// handleScheduledRun 手动触发一个定时任务。
-func (s *Service) handleScheduledRun(_ pluginapi.ManagementRequest, kind string) pluginapi.ManagementResponse {
-	s.tasks.RunAsync(kind)
-	return JSONResponse(http.StatusOK, map[string]any{
-		"ok": true, "started": true, "task": kind,
-		"message": "任务已在后台开始执行，进度见插件日志",
-	})
-}
