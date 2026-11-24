@@ -11,6 +11,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -27,6 +28,9 @@ type adapter struct {
 	*core.NativeAdapter[*Credential]
 	region Region
 	rt     *runtime
+
+	creditMu       sync.Mutex
+	creditCooldown map[creditAccount]time.Time
 }
 
 // Instances 构造 WorkBuddy 的两个区域实例。
@@ -200,6 +204,10 @@ func (v *adapter) Execute(ctx context.Context, cred *core.Credential, req *core.
 	if errNative != nil {
 		return nil, errNative
 	}
+	account := creditAccount{fileID: cred.FileIDValue(), uid: native.UIDValue()}
+	if errCooldown := v.checkCreditCooldown(account); errCooldown != nil {
+		return nil, errCooldown
+	}
 	client := v.client(ctx)
 	result, errChat := client.Chat(ChatRequest{
 		Credential: native,
@@ -209,8 +217,7 @@ func (v *adapter) Execute(ctx context.Context, cred *core.Credential, req *core.
 		Meta:       ChatMetaFromBody(req.Payload),
 	})
 	if errChat != nil {
-		v.noteModelBlocked(native, req.Model, errChat)
-		return nil, errChat
+		return nil, v.handleChatError(account, native, req.Model, errChat)
 	}
 	return &pluginapi.ExecutorResponse{
 		Payload: result.Response,
@@ -224,6 +231,10 @@ func (v *adapter) ExecuteStream(ctx context.Context, cred *core.Credential, req 
 	if errNative != nil {
 		return errNative
 	}
+	account := creditAccount{fileID: cred.FileIDValue(), uid: native.UIDValue()}
+	if errCooldown := v.checkCreditCooldown(account); errCooldown != nil {
+		return errCooldown
+	}
 	client := v.client(ctx)
 	reader, errStream := client.ChatStream(ChatRequest{
 		Credential: native,
@@ -233,8 +244,7 @@ func (v *adapter) ExecuteStream(ctx context.Context, cred *core.Credential, req 
 		Meta:       ChatMetaFromBody(req.Payload),
 	})
 	if errStream != nil {
-		v.noteModelBlocked(native, req.Model, errStream)
-		return errStream
+		return v.handleChatError(account, native, req.Model, errStream)
 	}
 	defer func() { _ = reader.Close() }()
 
@@ -242,9 +252,75 @@ func (v *adapter) ExecuteStream(ctx context.Context, cred *core.Credential, req 
 	// 空流不算失败：上游有时返回一条没有任何 delta 的流，
 	// 把它当错误会让客户端收到无意义的错误帧。
 	if errForward != nil && !IsEmptyStreamError(errForward) && ctx.Err() == nil {
-		return errForward
+		return v.handleChatError(account, native, req.Model, errForward)
 	}
 	return nil
+}
+
+// Without an upstream reset or retry hint, recheck later rather than treating
+// exhausted credits as a burst limit. This is not a predicted refill time.
+const unknownCreditResetRetry = 30 * time.Minute
+
+type creditAccount struct {
+	fileID string
+	uid    string
+}
+
+// CPA versions that schedule plugin errors per model may still select the same
+// depleted credential for a different model. Reject it before contacting
+// WorkBuddy and return the remaining cooldown, not a fresh one.
+func (v *adapter) checkCreditCooldown(account creditAccount) error {
+	v.creditMu.Lock()
+	defer v.creditMu.Unlock()
+	if remaining := time.Until(v.creditCooldown[account]); remaining > 0 {
+		return &core.Failure{
+			Kind:      core.FailureKindHardCredit,
+			Status:    http.StatusTooManyRequests,
+			Msg:       "WorkBuddy credits exhausted; credential is cooling down",
+			RetryWait: remaining,
+		}
+	}
+	delete(v.creditCooldown, account)
+	return nil
+}
+
+func (v *adapter) handleChatError(account creditAccount, native *Credential, model string, err error) error {
+	var failure *core.Failure
+	if !errors.As(err, &failure) || failure.Kind != core.FailureKindHardCredit {
+		v.noteModelBlocked(native, model, err)
+		return err
+	}
+
+	v.creditMu.Lock()
+	defer v.creditMu.Unlock()
+	now := time.Now()
+	deadline := v.creditCooldown[account]
+	if !deadline.After(now) {
+		deadline = failure.ResetAt
+		if !deadline.After(now) {
+			wait := failure.RetryWait
+			if wait <= 0 {
+				wait = unknownCreditResetRetry
+			}
+			deadline = now.Add(wait)
+		}
+		// Don't retain expired entries for credentials that were removed.
+		for key, until := range v.creditCooldown {
+			if !until.After(now) {
+				delete(v.creditCooldown, key)
+			}
+		}
+		if v.creditCooldown == nil {
+			v.creditCooldown = make(map[creditAccount]time.Time)
+		}
+		v.creditCooldown[account] = deadline
+	}
+
+	result := *failure
+	// CPA's 402 cooldown is fixed; its 429 path honors RetryAfter.
+	result.Status = http.StatusTooManyRequests
+	result.RetryWait = deadline.Sub(now)
+	return &result
 }
 
 // noteModelBlocked 把「上游说没有这个模型」记进运行时隔离表。

@@ -22,7 +22,7 @@ import (
 
 // 本供应商使用的错误类别（与 core.FailureKind 一一对应）：
 //   - none：表示成功。
-//   - hard_credit：余额耗尽（402 或余额关键词）→ 长冷却到次日。
+//   - hard_credit：余额耗尽（402、明确业务码或余额关键词）→ 按上游提示冷却。
 //   - soft_rate：限流（429）→ 短冷却，指数退避。
 //   - session_dead：会话失效（12153）→ 禁用，需重新登录。
 //   - not_found：上游偶发 404 → 固定短冷却，不累计熔断。
@@ -177,6 +177,19 @@ func Classify(status int, body string) *core.Failure {
 		return &core.Failure{Kind: core.FailureKindClient, Status: status, Msg: body}
 	}
 	return &core.Failure{Kind: core.FailureKindNone, Status: status, Msg: body}
+}
+
+// A successful HTTP handshake can still carry an explicit credit error in SSE.
+// Other error frames retain their existing handling.
+func creditStreamError(payload string) *core.Failure {
+	if !strings.Contains(payload, "14018") {
+		return nil
+	}
+	failure := enrichClassifyError(http.StatusTooManyRequests, payload, nil)
+	if failure.Kind != core.FailureKindHardCredit {
+		return nil
+	}
+	return failure
 }
 
 // isModelBlocked 判断是否为「该后端无此模型」（11102）。

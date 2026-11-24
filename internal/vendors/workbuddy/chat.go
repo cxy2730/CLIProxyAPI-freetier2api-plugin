@@ -1046,7 +1046,7 @@ func isEmptyJSONValue(raw json.RawMessage) bool {
 //
 // 行为要点：
 //   - 收到 `[DONE]` 后停止读取，之后的数据一律忽略；
-//   - 含 error 键的帧原样透传（错误帧不该被白名单改写）；
+//   - 明确的积分耗尽作为调度错误返回；其他 error 帧原样透传；
 //   - 白名单重建其余帧；
 //   - 全程零有效数据帧 → 返回 errEmptyStream。
 func Stream(body io.Reader, opts StreamOptions) (StreamStats, error) {
@@ -1092,9 +1092,12 @@ func Stream(body io.Reader, opts StreamOptions) (StreamStats, error) {
 			continue
 		}
 
-		// 错误帧：原样透传，可选附加提示。上游的错误信息比我们重建的更有价值。
+		// 积分耗尽交给宿主调度，其他错误帧原样透传，可选附加提示。
 		// 先做子串预判：错误帧极少，不该为每一帧多解一次 JSON。
 		if strings.Contains(payload, `"error"`) && isErrorFrame(payload) {
+			if failure := creditStreamError(payload); failure != nil {
+				return stats, failure
+			}
 			stats.Frames++
 			sawAny = true
 			if errEmit := opts.emit([]byte(attachHint(payload, opts.Hint))); errEmit != nil {
@@ -1305,6 +1308,9 @@ func Aggregate(body io.Reader) ([]byte, error) {
 			continue
 		}
 		if isErrorFrame(payload) {
+			if failure := creditStreamError(payload); failure != nil {
+				return nil, failure
+			}
 			return nil, fmt.Errorf("upstream error: %s", core.Truncate(payload, 512))
 		}
 		validEvents++
