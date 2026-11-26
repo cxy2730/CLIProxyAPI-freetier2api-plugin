@@ -5,7 +5,11 @@
 - `pluginabi/types.go` 对齐宿主 `sdk/pluginabi/types.go`；
 - `pluginapi/types.go` 对齐宿主 `sdk/pluginapi/types.go`。
 
-**当前对齐版本：CLIProxyAPI v8.1.0（`SchemaVersion = 10`）。**
+**当前对齐版本：CLIProxyAPI v8.1.5（`SchemaVersion = 10`，ABI 仍为 1）。**
+
+v8.1.4 起 `Capabilities` 多了一个 `ExecutorAuthProviders []string`（宿主把 Home 选中的
+凭证透传给插件 Executor，见宿主 `internal/pluginhost/executor_route.go`）。本插件的凭证
+全部由插件自己管理，因此该字段恒为空、不参与 Home 分发——同步时保留字段、不填值。
 
 同步方式：从宿主对应版本复制这两个文件，保持排版一致；`gofmt` 检查刻意排除本目录。
 宿主升级 ABI 时先更新这里，再调整 `internal/app` 的 RPC 适配层。

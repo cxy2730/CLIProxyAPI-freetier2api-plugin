@@ -43,12 +43,16 @@ type registration struct {
 type registrationCapabilities struct {
 	ResponseBeforeTranslator bool `json:"response_before_translator"`
 
-	ModelProvider         bool     `json:"model_provider"`
-	AuthProvider          bool     `json:"auth_provider"`
-	Executor              bool     `json:"executor"`
-	QuotaProvider         bool     `json:"quota_provider"`
-	ManagementAPI         bool     `json:"management_api"`
-	ExecutorModelScope    string   `json:"executor_model_scope"`
+	ModelProvider      bool   `json:"model_provider"`
+	AuthProvider       bool   `json:"auth_provider"`
+	Executor           bool   `json:"executor"`
+	QuotaProvider      bool   `json:"quota_provider"`
+	ManagementAPI      bool   `json:"management_api"`
+	ExecutorModelScope string `json:"executor_model_scope"`
+	// ExecutorAuthProviders 留空：本插件的凭证全部由插件自己管理，
+	// 不需要宿主把 Home（antigravity）选中的凭证透传进 Executor。
+	// 宿主侧语义：非空时该插件参与 Home 分发（internal/pluginhost/executor_route.go）。
+	ExecutorAuthProviders []string `json:"executor_auth_providers,omitempty"`
 	ExecutorInputFormats  []string `json:"executor_input_formats"`
 	ExecutorOutputFormats []string `json:"executor_output_formats"`
 }
