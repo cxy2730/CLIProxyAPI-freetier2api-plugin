@@ -5,11 +5,18 @@
 - `pluginabi/types.go` 对齐宿主 `sdk/pluginabi/types.go`；
 - `pluginapi/types.go` 对齐宿主 `sdk/pluginapi/types.go`。
 
-**当前对齐版本：CLIProxyAPI v8.1.7（`SchemaVersion = 10`，ABI 仍为 1）。**
+**当前对齐版本：CLIProxyAPI v8.1.8（`SchemaVersion = 11`，ABI 仍为 1）。**
 
-v8.1.6 / v8.1.7 对插件契约**零改动**：`sdk/pluginapi`、`sdk/pluginabi` 未变，
-仅 `sdk/pluginhost/host.go` 新增 `HomeLocalExecutorFence`（宿主内嵌 API，不是插件 ABI）。
-因此 v0.1.76 起的产物即为 v8.1.7 对齐版，无需重建。
+v8.1.8 把契约升到 11，新增的都是 **scheduler 插件侧**的能力：
+
+- `Capabilities.SchedulerPickCancel`：调度插件可订阅 `scheduler.pick.cancel` 推送，
+  请求上下文被取消时宿主主动通知，不必再阻塞等 `scheduler.pick` 返回
+- `scheduler.pick` 请求新增 `host_callback_id`，配合 `host.context.done` /
+  `host.context.wait` 两个宿主回调，让插件观察请求是否已取消或超时
+- 新增类型：`SchedulerPickCancelRequest`、`HostContextDone/WaitRequest|Response`
+
+本插件不实现 `SchedulerPick`，也未声明 `SchedulerPickCancel`，因此这些能力只做契约
+同步、不参与运行；协商逻辑仍是 `min(宿主版本, 11)`，老宿主照旧降级到 10/8/6。
 
 v8.1.4 起 `Capabilities` 多了一个 `ExecutorAuthProviders []string`（宿主把 Home 选中的
 凭证透传给插件 Executor，见宿主 `internal/pluginhost/executor_route.go`）。本插件的凭证
