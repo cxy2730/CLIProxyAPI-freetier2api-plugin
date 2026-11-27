@@ -5,7 +5,11 @@
 - `pluginabi/types.go` 对齐宿主 `sdk/pluginabi/types.go`；
 - `pluginapi/types.go` 对齐宿主 `sdk/pluginapi/types.go`。
 
-**当前对齐版本：CLIProxyAPI v8.1.5（`SchemaVersion = 10`，ABI 仍为 1）。**
+**当前对齐版本：CLIProxyAPI v8.1.7（`SchemaVersion = 10`，ABI 仍为 1）。**
+
+v8.1.6 / v8.1.7 对插件契约**零改动**：`sdk/pluginapi`、`sdk/pluginabi` 未变，
+仅 `sdk/pluginhost/host.go` 新增 `HomeLocalExecutorFence`（宿主内嵌 API，不是插件 ABI）。
+因此 v0.1.76 起的产物即为 v8.1.7 对齐版，无需重建。
 
 v8.1.4 起 `Capabilities` 多了一个 `ExecutorAuthProviders []string`（宿主把 Home 选中的
 凭证透传给插件 Executor，见宿主 `internal/pluginhost/executor_route.go`）。本插件的凭证
